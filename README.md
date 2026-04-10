@@ -1,6 +1,6 @@
 # ECO Plug Sender
 
-This repo now includes a standalone C# port of the ECO plug packet writer/sender from the original Perl script. The Nest code is not used by the C# tool.
+A standalone CLI for sending reverse-engineered UDP control packets to ECO plugs.
 
 The packet layout intentionally preserves the original reverse-engineered behavior:
 
