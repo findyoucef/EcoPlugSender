@@ -20,19 +20,21 @@ The packet layout intentionally preserves the original reverse-engineered behavi
 dotnet run --project EcoPlugSender -- on --dry-run --print-packet
 dotnet run --project EcoPlugSender -- on --dry-run --decode
 dotnet run --project EcoPlugSender -- off
-dotnet run --project EcoPlugSender -- on --ip 192.168.1.102 --plug-id ECO-7806EDD6 --name Heater
-dotnet run --project EcoPlugSender -- rename --ip 192.168.68.126 --current-name "office temp11" --new-name "office temp12"
-dotnet run --project EcoPlugSender -- rename --ip 192.168.68.126 --current-name "office temp11" --new-name "office temp12" --dry-run --decode
+dotnet run --project EcoPlugSender -- on --plug-id ECO-7806EDD6 --name Heater
+dotnet run --project EcoPlugSender -- rename --current-name "office temp11" --new-name "office temp12"
+dotnet run --project EcoPlugSender -- rename --current-name "office temp11" --new-name "office temp12" --dry-run --decode
 dotnet run --project EcoPlugSender -- decode --hex "16 00 05 00 00 00 27 56 02 00 31 2E 36 2E 33 00"
 dotnet run --project EcoPlugSender -- pcap-timeline --pcap /mnt/c/Users/baouchiy/Downloads/PCAPdroid_09_Apr_01_06_42.pcap --plug-ip 192.168.68.126
 ```
 
-Defaults match the original Perl script:
+Shared defaults:
 
-- IP: `192.168.1.102`
+- IP: `192.168.68.126`
 - Port: `80`
 - Plug ID: `ECO-7806EDD6`
-- Plug name: `Heater`
+- Power-packet name: `Heater`
+
+`rename` does not default `--current-name`. You have to provide the device's current stored name explicitly.
 
 `--dry-run` builds the UDP payload without sending it.
 
@@ -44,7 +46,7 @@ Defaults match the original Perl script:
 
 During `rename`, the tool also sends the same style of 128-byte broadcast “connecting” packets the phone app emits to `255.255.255.255:5888` and `255.255.255.255:25` from local source port `8900`.
 
-In normal use you only need `--current-name` and `--new-name`. When used with `--decode`, it prints both the generated packets and the plug's UDP replies so you can confirm the stored name the device returned.
+In normal use, `rename` only needs `--current-name` and `--new-name`. When used with `--decode`, it prints both the generated packets and the plug's UDP replies so you can confirm the stored name the device returned.
 
 The `office temp4 -> office temp5` capture also showed repeated 128-byte broadcast UDP packets to `255.255.255.255:5888` and `255.255.255.255:25` while the app displayed a “connecting” dialog. Those packets are mostly zeros except for the date/counter bytes, and `rename` replays that traffic in the background because it is still part of the app’s observable session behavior.
 

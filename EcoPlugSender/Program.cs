@@ -145,16 +145,15 @@ internal static class App
     {
         Console.WriteLine("Usage:");
         Console.WriteLine("  EcoPlugSender <on|off> [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender rename --new-name <name> [--current-name <name>] [--ip <address>] [--port <port>] [--plug-id <id>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender rename --current-name <name> --new-name <name> [--ip <address>] [--port <port>] [--plug-id <id>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender decode --hex \"16 00 05 00 ...\"");
         Console.WriteLine("  EcoPlugSender pcap-timeline --pcap <file> [--plug-ip <address>]");
         Console.WriteLine();
         Console.WriteLine("Defaults:");
-        Console.WriteLine("  --ip        192.168.1.102");
+        Console.WriteLine("  --ip        192.168.68.126");
         Console.WriteLine("  --port      80");
         Console.WriteLine("  --plug-id   ECO-7806EDD6");
         Console.WriteLine("  --name      Heater");
-        Console.WriteLine("  --current-name Heater");
         Console.WriteLine();
         Console.WriteLine("Extras:");
         Console.WriteLine("  --decode    Print a structured field breakdown for the built packet");
@@ -420,7 +419,7 @@ internal sealed record EcoPlugOptions(
     string? PcapPath = null,
     IPAddress? PcapPlugIp = null)
 {
-    private const string DefaultIp = "192.168.1.102";
+    private const string DefaultIp = "192.168.68.126";
     private const int DefaultPort = 80;
     private const string DefaultPlugId = "ECO-7806EDD6";
     private const string DefaultPlugName = "Heater";
@@ -550,7 +549,7 @@ internal sealed record EcoPlugOptions(
         var ipText = DefaultIp;
         var port = DefaultPort;
         var plugId = DefaultPlugId;
-        var currentName = DefaultPlugName;
+        string? currentName = null;
         string? newName = null;
         var dryRun = false;
         var printPacket = false;
@@ -619,6 +618,11 @@ internal sealed record EcoPlugOptions(
         if (showHelp)
         {
             return new EcoPlugOptions(EcoPlugMode.Rename, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+        }
+
+        if (string.IsNullOrWhiteSpace(currentName))
+        {
+            throw new ArgumentException("Rename requires --current-name.");
         }
 
         if (string.IsNullOrWhiteSpace(newName))
