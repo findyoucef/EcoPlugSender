@@ -16,9 +16,13 @@ internal static class EcoPlugPacketBuilder
     private static readonly byte[] CommitCommandHeader = { 0x23, 0x00, 0x05, 0x00 };
 
     private static readonly byte[] PowerSequence = { 0x00, 0x00, 0x27, 0x56 };
-    private static readonly byte[] PowerExtensionBody = { 0x02, 0x00 };
-    private static readonly byte[] CommitMarker = { 0x01, 0x00 };
+    private static readonly byte[] CommitBody = { 0x01, 0x00 };
     private static readonly byte[] FirmwareVersion = Encoding.ASCII.GetBytes("1.6.3");
+
+    // Bytes 8..9 are a command-type marker, not a computed extension length.
+    // Per the original Perl reference: 0x02 0x00 = Write, 0x00 0x00 = Read/Probe/Info.
+    private static readonly byte[] WriteCommandMarker = { 0x02, 0x00 };
+    private static readonly byte[] ReadCommandMarker = { 0x00, 0x00 };
 
     // The power command still uses the original fixed session fields from the Perl script.
     private static readonly byte[] DefaultPowerField116 = { 0x3E, 0x1F, 0xB4, 0x16 };
@@ -33,22 +37,19 @@ internal static class EcoPlugPacketBuilder
         ValidateAsciiField("plug name", plugName, 32);
         ValidateAsciiField("bare plug ID", barePlugId, 16);
 
-        var buffer = BuildPacket(
+        var tail = state == PlugPowerState.On
+            ? new byte[] { 0x01, 0x01 }
+            : new byte[] { 0x01 };
+
+        return BuildPacket(
             headerBytes: WriteCommandHeader,
             plugId: normalizedPlugId,
             plugName: plugName,
             sequenceBytes: PowerSequence,
             field116: DefaultPowerField116,
             field124: DefaultPowerField124,
-            extensionBody: PowerExtensionBody);
-
-        buffer.Add(0x01);
-        if (state == PlugPowerState.On)
-        {
-            buffer.Add(0x01);
-        }
-
-        return buffer.ToArray();
+            commandMarker: WriteCommandMarker,
+            trailingBytes: tail).ToArray();
     }
 
     public static byte[] BuildRenamePacket(
@@ -67,6 +68,7 @@ internal static class EcoPlugPacketBuilder
         ValidateAsciiField("new name", newName, 32);
         ValidateAsciiField("bare plug ID", barePlugId, 16);
 
+        var renameBody = BuildRenameBody(newName, barePlugId);
         return BuildPacket(
             headerBytes: RenameCommandHeader,
             plugId: normalizedPlugId,
@@ -74,20 +76,21 @@ internal static class EcoPlugPacketBuilder
             sequenceBytes: sequenceBytes,
             field116: field116,
             field124: field124,
-            extensionBody: BuildRenameBody(newName, barePlugId)).ToArray();
+            commandMarker: LengthAsMarker(renameBody.Length),
+            trailingBytes: renameBody).ToArray();
     }
 
     public static byte[] BuildProbePacket(string plugId, string currentName, byte[] sequenceBytes, byte[] field116, byte[] field124)
-        => BuildPacket(ProbeCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, []).ToArray();
+        => BuildPacket(ProbeCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, ReadCommandMarker, []).ToArray();
 
     public static byte[] BuildInfoPacket(string plugId, string currentName, byte[] sequenceBytes, byte[] field116, byte[] field124)
-        => BuildPacket(InfoCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, []).ToArray();
+        => BuildPacket(InfoCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, ReadCommandMarker, []).ToArray();
 
     public static byte[] BuildReadPacket(string plugId, string currentName, byte[] sequenceBytes, byte[] field116, byte[] field124)
-        => BuildPacket(ReadCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, []).ToArray();
+        => BuildPacket(ReadCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, ReadCommandMarker, []).ToArray();
 
     public static byte[] BuildCommitPacket(string plugId, string currentName, byte[] sequenceBytes, byte[] field116, byte[] field124)
-        => BuildPacket(CommitCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, CommitMarker).ToArray();
+        => BuildPacket(CommitCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, LengthAsMarker(CommitBody.Length), CommitBody).ToArray();
 
     public static byte[] BuildConnectingBroadcastPacket(uint counter)
     {
@@ -111,21 +114,21 @@ internal static class EcoPlugPacketBuilder
         byte[] sequenceBytes,
         byte[] field116,
         byte[] field124,
-        IReadOnlyCollection<byte> extensionBody)
+        byte[] commandMarker,
+        IReadOnlyCollection<byte> trailingBytes)
     {
         var barePlugId = StripEcoPrefix(plugId);
         ValidateFixedBytes("header", headerBytes, 4);
         ValidateFixedBytes("sequence", sequenceBytes, 4);
+        ValidateFixedBytes("commandMarker", commandMarker, 2);
         ValidateFixedBytes("field116", field116, 4);
         ValidateFixedBytes("field124", field124, 4);
 
-        var extensionLength = (ushort)extensionBody.Count;
-        var buffer = new List<byte>(128 + extensionLength);
+        var buffer = new List<byte>(128 + trailingBytes.Count);
 
         buffer.AddRange(headerBytes);
         buffer.AddRange(sequenceBytes);
-        buffer.Add((byte)(extensionLength & 0xFF));
-        buffer.Add((byte)((extensionLength >> 8) & 0xFF));
+        buffer.AddRange(commandMarker);
         buffer.AddRange(FirmwareVersion);
         buffer.Add(0x00);
         WritePaddedAscii(buffer, plugId, 16);
@@ -137,10 +140,13 @@ internal static class EcoPlugPacketBuilder
         buffer.AddRange(field116);
         buffer.AddRange(new byte[4]);
         buffer.AddRange(field124);
-        buffer.AddRange(extensionBody);
+        buffer.AddRange(trailingBytes);
 
         return buffer;
     }
+
+    private static byte[] LengthAsMarker(int length)
+        => new byte[] { (byte)(length & 0xFF), (byte)((length >> 8) & 0xFF) };
 
     private static byte[] BuildRenameBody(string newName, string barePlugId)
     {
