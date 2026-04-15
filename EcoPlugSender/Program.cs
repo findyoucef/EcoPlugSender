@@ -9,6 +9,7 @@ internal enum EcoPlugMode
 {
     BuildAndSend,
     DecodeHex,
+    Discover,
     PcapTimeline,
     Rename,
 }
@@ -37,6 +38,11 @@ internal static class App
             {
                 Console.WriteLine(PcapTimeline.Describe(options.PcapPath!, options.PcapPlugIp));
                 return 0;
+            }
+
+            if (options.Mode == EcoPlugMode.Discover)
+            {
+                return await ExecuteDiscoverAsync(options);
             }
 
             if (options.Mode == EcoPlugMode.Rename)
@@ -146,6 +152,7 @@ internal static class App
         Console.WriteLine("Usage:");
         Console.WriteLine("  EcoPlugSender <on|off> [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender rename --current-name <name> --new-name <name> [--ip <address>] [--port <port>] [--plug-id <id>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender discover [--timeout-ms <ms>] [--decode]");
         Console.WriteLine("  EcoPlugSender decode --hex \"16 00 05 00 ...\"");
         Console.WriteLine("  EcoPlugSender pcap-timeline --pcap <file> [--plug-ip <address>]");
         Console.WriteLine();
@@ -238,6 +245,137 @@ internal static class App
         }
 
         return packets;
+    }
+
+    private static async Task<int> ExecuteDiscoverAsync(EcoPlugOptions options)
+    {
+        Console.WriteLine($"Discover listens on UDP 8900 and sends connect-broadcast packets to 255.255.255.255:5888 and :25 for {options.DiscoverDurationMs}ms.");
+
+        using var client = EcoPlugClient.OpenClient(sourcePort: 8900, enableBroadcast: true);
+        using var cts = new CancellationTokenSource(options.DiscoverDurationMs);
+
+        var broadcastTask = RunConnectingBroadcastLoopAsync(client, cts.Token);
+        var responses = new List<EcoPlugResponse>();
+
+        try
+        {
+            while (!cts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    var result = await client.ReceiveAsync(cts.Token);
+                    responses.Add(new EcoPlugResponse(result.Buffer, result.RemoteEndPoint));
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            await IgnoreCanceledTaskAsync(broadcastTask);
+        }
+
+        Console.WriteLine($"Received {responses.Count} UDP responses.");
+
+        var plugs = new Dictionary<(IPAddress Address, string PlugId), DiscoveredPlug>();
+        var nonEcoEndpoints = new HashSet<IPEndPoint>();
+
+        foreach (var response in responses)
+        {
+            var info = TryExtractEcoInfo(response.Payload);
+            if (info is null)
+            {
+                nonEcoEndpoints.Add(response.RemoteEndPoint);
+                continue;
+            }
+
+            var key = (response.RemoteEndPoint.Address, info.Value.PlugId);
+            if (plugs.TryGetValue(key, out var existing))
+            {
+                plugs[key] = existing with
+                {
+                    Name = existing.Name ?? info.Value.Name,
+                    PacketCount = existing.PacketCount + 1,
+                };
+            }
+            else
+            {
+                plugs[key] = new DiscoveredPlug(response.RemoteEndPoint, info.Value.PlugId, info.Value.Name, 1);
+            }
+        }
+
+        if (plugs.Count == 0)
+        {
+            Console.WriteLine("No ECO plug replies were observed.");
+        }
+        else
+        {
+            foreach (var plug in plugs.Values)
+            {
+                var nameText = string.IsNullOrWhiteSpace(plug.Name) ? "<unknown>" : plug.Name;
+                Console.WriteLine($"Discovered {plug.RemoteEndPoint.Address}:{plug.RemoteEndPoint.Port} {plug.PlugId} \"{nameText}\" via {plug.PacketCount} packets.");
+            }
+        }
+
+        if (nonEcoEndpoints.Count > 0)
+        {
+            var endpointList = string.Join(", ", nonEcoEndpoints.Select(ep => ep.ToString()));
+            Console.WriteLine($"Also received non-ECO UDP responses from: {endpointList}");
+        }
+
+        if (options.PrintDecode)
+        {
+            var index = 0;
+            foreach (var response in responses)
+            {
+                index++;
+                Console.WriteLine();
+                Console.WriteLine($"[discover response {index} from {response.RemoteEndPoint}]");
+                if (EcoPlugPacketInspector.LooksLikeEcoPacket(response.Payload))
+                {
+                    Console.WriteLine(EcoPlugPacketDecoder.Describe(response.Payload));
+                }
+                else
+                {
+                    Console.WriteLine("Unrecognized UDP payload");
+                    Console.WriteLine(PacketHex.Format(response.Payload));
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    private static (string PlugId, string? Name)? TryExtractEcoInfo(byte[] packet)
+    {
+        var scanEnd = Math.Min(packet.Length - 16, 64);
+        for (var i = 0; i <= scanEnd; i++)
+        {
+            if (packet[i] == 0x45 && packet[i + 1] == 0x43 && packet[i + 2] == 0x4F && packet[i + 3] == 0x2D)
+            {
+                var plugId = System.Text.Encoding.ASCII.GetString(packet, i, 16).TrimEnd('\0');
+                if (string.IsNullOrWhiteSpace(plugId) || !plugId.StartsWith("ECO-"))
+                {
+                    continue;
+                }
+
+                string? name = null;
+                if (packet.Length >= i + 32 + 32)
+                {
+                    name = System.Text.Encoding.ASCII.GetString(packet, i + 32, 32).TrimEnd('\0');
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = null;
+                    }
+                }
+
+                return (plugId, name);
+            }
+        }
+
+        return null;
     }
 
     private static async Task<RenameRun> ExecuteRenameAsync(EcoPlugOptions options, IReadOnlyList<RenameStep> steps)
@@ -367,6 +505,8 @@ internal static class App
 
 }
 
+internal sealed record DiscoveredPlug(IPEndPoint RemoteEndPoint, string PlugId, string? Name, int PacketCount);
+
 internal sealed record TimedPacket(string Label, byte[] Payload, int SendAfterMs);
 
 internal sealed record RenameStep(
@@ -417,12 +557,14 @@ internal sealed record EcoPlugOptions(
     string? HexPacket,
     bool ShowHelp,
     string? PcapPath = null,
-    IPAddress? PcapPlugIp = null)
+    IPAddress? PcapPlugIp = null,
+    int DiscoverDurationMs = 5000)
 {
     private const string DefaultIp = "192.168.68.126";
     private const int DefaultPort = 80;
     private const string DefaultPlugId = "ECO-7806EDD6";
     private const string DefaultPlugName = "Heater";
+    internal const int DefaultDiscoverDurationMs = 5000;
 
     public static EcoPlugOptions Parse(string[] args)
     {
@@ -442,6 +584,8 @@ internal sealed record EcoPlugOptions(
                 ? ParsePcapTimelineMode(args[1..])
             : args[0].Equals("rename", StringComparison.OrdinalIgnoreCase)
                 ? ParseRenameMode(args[1..])
+            : args[0].Equals("discover", StringComparison.OrdinalIgnoreCase)
+                ? ParseDiscoverMode(args[1..])
             : ParseBuildMode(args);
     }
 
@@ -693,6 +837,71 @@ internal sealed record EcoPlugOptions(
         }
 
         return new EcoPlugOptions(EcoPlugMode.DecodeHex, null, null, DefaultPort, null, null, null, null, false, false, false, hexPacket, false);
+    }
+
+    private static EcoPlugOptions ParseDiscoverMode(string[] args)
+    {
+        var showHelp = false;
+        var printDecode = false;
+        var durationMs = DefaultDiscoverDurationMs;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            if (arg is "-h" or "--help")
+            {
+                showHelp = true;
+                continue;
+            }
+
+            if (arg == "--decode")
+            {
+                printDecode = true;
+                continue;
+            }
+
+            if (!arg.StartsWith("-", StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"Unexpected argument in discover mode: {arg}");
+            }
+
+            var value = ReadOptionValue(args, ref i, arg);
+            switch (arg)
+            {
+                case "--timeout-ms":
+                    if (!int.TryParse(value, out durationMs) || durationMs < 100)
+                    {
+                        throw new ArgumentException("--timeout-ms must be an integer >= 100.");
+                    }
+                    break;
+                default:
+                    throw new ArgumentException($"Unknown option: {arg}");
+            }
+        }
+
+        if (showHelp)
+        {
+            return new EcoPlugOptions(EcoPlugMode.Discover, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+        }
+
+        return new EcoPlugOptions(
+            EcoPlugMode.Discover,
+            null,
+            null,
+            DefaultPort,
+            null,
+            null,
+            null,
+            null,
+            false,
+            false,
+            printDecode,
+            null,
+            false,
+            null,
+            null,
+            durationMs);
     }
 
     private static EcoPlugOptions ParsePcapTimelineMode(string[] args)
