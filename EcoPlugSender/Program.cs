@@ -333,7 +333,8 @@ internal static class App
                 index++;
                 Console.WriteLine();
                 Console.WriteLine($"[discover response {index} from {response.RemoteEndPoint}]");
-                if (EcoPlugPacketInspector.LooksLikeEcoPacket(response.Payload))
+                if (EcoPlugPacketInspector.LooksLikeEcoPacket(response.Payload)
+                    || EcoPlugPacketDecoder.LooksLikeResponse(response.Payload))
                 {
                     Console.WriteLine(EcoPlugPacketDecoder.Describe(response.Payload));
                 }

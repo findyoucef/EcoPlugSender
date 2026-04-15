@@ -4,6 +4,11 @@ internal static class EcoPlugPacketDecoder
 {
     public static string Describe(byte[] packet)
     {
+        if (LooksLikeResponse(packet))
+        {
+            return DescribeResponse(packet);
+        }
+
         var commandCode = packet.Length >= 1 ? packet[0] : (byte)0x00;
         var extensionLength = packet.Length >= 10 ? packet[8] | (packet[9] << 8) : 0;
         var lines = new List<string>
@@ -36,6 +41,90 @@ internal static class EcoPlugPacketDecoder
 
         return string.Join(Environment.NewLine, lines);
     }
+
+    public static bool LooksLikeResponse(byte[] packet)
+    {
+        if (packet.Length < 26)
+        {
+            return false;
+        }
+
+        if (packet[0] != 0 || packet[1] != 0 || packet[2] != 0 || packet[3] != 0)
+        {
+            return false;
+        }
+
+        if (Encoding.ASCII.GetString(packet, 4, 5) != "1.6.3")
+        {
+            return false;
+        }
+
+        return packet[10] == 0x45 && packet[11] == 0x43 && packet[12] == 0x4F && packet[13] == 0x2D;
+    }
+
+    private static string DescribeResponse(byte[] packet)
+    {
+        var lines = new List<string>
+        {
+            $"Length: {packet.Length} bytes",
+            "Format: ECO plug broadcast advertisement",
+            DescribeBytes(packet, 0, 4, "header zeros"),
+            DescribeAscii(packet, 4, 5, "firmware"),
+            DescribeBytes(packet, 9, 1, "separator"),
+            DescribeAscii(packet, 10, 16, "full plug ID"),
+            DescribeBytes(packet, 26, 16, "reserved"),
+            DescribeAscii(packet, 42, 32, "plug name"),
+            DescribeAscii(packet, 74, 16, "bare plug ID"),
+        };
+
+        var tailOffset = 90;
+        if (packet.Length > tailOffset)
+        {
+            lines.Add(string.Empty);
+            lines.Add($"ASCII strings found after offset {tailOffset}:");
+            var found = false;
+            foreach (var line in FindAsciiRuns(packet, tailOffset, minRun: 4))
+            {
+                lines.Add(line);
+                found = true;
+            }
+
+            if (!found)
+            {
+                lines.Add("  (none)");
+            }
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static IEnumerable<string> FindAsciiRuns(byte[] packet, int startOffset, int minRun)
+    {
+        var i = startOffset;
+        while (i < packet.Length)
+        {
+            if (!IsPrintable(packet[i]))
+            {
+                i++;
+                continue;
+            }
+
+            var start = i;
+            while (i < packet.Length && IsPrintable(packet[i]))
+            {
+                i++;
+            }
+
+            var length = i - start;
+            if (length >= minRun)
+            {
+                var text = Encoding.ASCII.GetString(packet, start, length);
+                yield return $"{FormatOffset(start, length),-11} {"ascii",-18} \"{text}\"";
+            }
+        }
+    }
+
+    private static bool IsPrintable(byte value) => value >= 0x20 && value <= 0x7E;
 
     private static string DescribeBytes(byte[] packet, int offset, int length, string label)
     {
