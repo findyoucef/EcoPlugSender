@@ -15,6 +15,7 @@ internal enum EcoPlugMode
     Provision,
     FindPlugs,
     Configure,
+    CloudEnroll,
 }
 
 internal static class App
@@ -61,6 +62,11 @@ internal static class App
             if (options.Mode == EcoPlugMode.Configure)
             {
                 return await ExecuteConfigureAsync(options);
+            }
+
+            if (options.Mode == EcoPlugMode.CloudEnroll)
+            {
+                return await ExecuteCloudEnrollAsync(options);
             }
 
             if (options.Mode == EcoPlugMode.Rename)
@@ -174,6 +180,7 @@ internal static class App
         Console.WriteLine("  EcoPlugSender provision --ssid <ssid> --password <pass> --zip <zip> [--name <name>] [--plug-id <id>] [--ip <address>] [--port <port>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender find-plugs");
         Console.WriteLine("  EcoPlugSender configure --ssid <home-ssid> --password <home-pass> --zip <zip> [--plug-ap <ECO-XXXXXXXX>] [--name <name>]");
+        Console.WriteLine("  EcoPlugSender cloud-enroll [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender decode --hex \"16 00 05 00 ...\"");
         Console.WriteLine("  EcoPlugSender pcap-timeline --pcap <file> [--plug-ip <address>]");
         Console.WriteLine();
@@ -440,6 +447,72 @@ internal static class App
 
         await EcoPlugClient.SendAsync(options.IpAddress!, options.Port, packet);
         Console.WriteLine($"Sent UDP packet to {options.IpAddress}:{options.Port}.");
+        return 0;
+    }
+
+    private static async Task<int> ExecuteCloudEnrollAsync(EcoPlugOptions options)
+    {
+        var sequenceBytes = GenerateSequenceBytes();
+        var field116 = GenerateRandomBytes(4);
+        var field124 = GenerateRandomBytes(4);
+
+        var packet = EcoPlugPacketBuilder.BuildInfoPacket(
+            options.PlugId!,
+            options.PlugName!,
+            sequenceBytes,
+            field116,
+            field124);
+
+        Console.WriteLine($"Built {packet.Length}-byte cloud-enroll (cmd=0x05) packet for {options.PlugId}.");
+
+        if (options.PrintPacket || options.DryRun)
+        {
+            Console.WriteLine(PacketHex.Format(packet));
+        }
+
+        if (options.PrintDecode)
+        {
+            Console.WriteLine();
+            Console.WriteLine(EcoPlugPacketDecoder.Describe(packet));
+        }
+
+        if (options.DryRun)
+        {
+            Console.WriteLine("Dry run only. Packet was not sent.");
+            return 0;
+        }
+
+        using var client = EcoPlugClient.OpenClient();
+        var endpoint = new IPEndPoint(options.IpAddress!, options.Port);
+        var responses = await EcoPlugClient.SendAndReceiveAsync(client, endpoint, packet, duplicateCount: 2, duplicateGapMs: 250, responseIdleTimeoutMs: 1500);
+
+        Console.WriteLine($"Sent UDP packet to {options.IpAddress}:{options.Port}.");
+        Console.WriteLine($"Received {responses.Count} UDP responses.");
+
+        var tokenReply = responses.FirstOrDefault(r => r.Payload.Length == 492 && r.Payload.Length >= 4 && r.Payload[0] == 0x05);
+        if (tokenReply is null)
+        {
+            Console.WriteLine("No 492-byte cmd=0x05 reply observed. Plug may not be reachable or already enrolled.");
+        }
+        else
+        {
+            var tokenHex = Convert.ToHexString(tokenReply.Payload, 112, 4).ToLowerInvariant();
+            Console.WriteLine($"Cloud token (bytes 112..115 of reply): {tokenHex}");
+            Console.WriteLine("Note: the 492-byte reply also echoes the plug's stored home WiFi password in cleartext. Use --decode to inspect.");
+        }
+
+        if (options.PrintDecode)
+        {
+            var index = 0;
+            foreach (var response in responses)
+            {
+                index++;
+                Console.WriteLine();
+                Console.WriteLine($"[cloud-enroll response {index} from {response.RemoteEndPoint}]");
+                Console.WriteLine(EcoPlugPacketDecoder.Describe(response.Payload));
+            }
+        }
+
         return 0;
     }
 
@@ -793,6 +866,8 @@ internal sealed record EcoPlugOptions(
                 ? ParseFindPlugsMode(args[1..])
             : args[0].Equals("configure", StringComparison.OrdinalIgnoreCase)
                 ? ParseConfigureMode(args[1..])
+            : args[0].Equals("cloud-enroll", StringComparison.OrdinalIgnoreCase)
+                ? ParseCloudEnrollMode(args[1..])
             : ParseBuildMode(args);
     }
 
@@ -912,6 +987,86 @@ internal sealed record EcoPlugOptions(
             ssid,
             password,
             zipCode);
+    }
+
+    private static EcoPlugOptions ParseCloudEnrollMode(string[] args)
+    {
+        var ipText = DefaultIp;
+        var port = DefaultPort;
+        var plugId = DefaultPlugId;
+        var plugName = DefaultPlugName;
+        var dryRun = false;
+        var printPacket = false;
+        var printDecode = false;
+        var showHelp = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            if (arg is "-h" or "--help")
+            {
+                showHelp = true;
+                continue;
+            }
+
+            if (arg == "--dry-run")
+            {
+                dryRun = true;
+                continue;
+            }
+
+            if (arg == "--print-packet")
+            {
+                printPacket = true;
+                continue;
+            }
+
+            if (arg == "--decode")
+            {
+                printDecode = true;
+                continue;
+            }
+
+            if (!arg.StartsWith("-", StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"Unexpected argument in cloud-enroll mode: {arg}");
+            }
+
+            var value = ReadOptionValue(args, ref i, arg);
+            switch (arg)
+            {
+                case "--ip":
+                    ipText = value;
+                    break;
+                case "--port":
+                    if (!int.TryParse(value, out port) || port is < 1 or > 65535)
+                    {
+                        throw new ArgumentException("Port must be a number between 1 and 65535.");
+                    }
+                    break;
+                case "--plug-id":
+                    plugId = value;
+                    break;
+                case "--name":
+                    plugName = value;
+                    break;
+                default:
+                    throw new ArgumentException($"Unknown option: {arg}");
+            }
+        }
+
+        if (showHelp)
+        {
+            return new EcoPlugOptions(EcoPlugMode.CloudEnroll, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+        }
+
+        if (!IPAddress.TryParse(ipText, out var ipAddress))
+        {
+            throw new ArgumentException($"Invalid IP address: {ipText}");
+        }
+
+        return new EcoPlugOptions(EcoPlugMode.CloudEnroll, null, ipAddress, port, plugId, plugName, null, null, dryRun, printPacket, printDecode, null, false);
     }
 
     private static EcoPlugOptions ParseProvisionMode(string[] args)
