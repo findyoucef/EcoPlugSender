@@ -28,7 +28,24 @@ internal sealed class LinuxWifiController : IWifiController
         var args = password is null
             ? $"device wifi connect \"{Escape(ssid)}\""
             : $"device wifi connect \"{Escape(ssid)}\" password \"{Escape(password)}\"";
-        await ShellRunner.RunOrThrowAsync("nmcli", args, cancellationToken);
+        try
+        {
+            await ShellRunner.RunOrThrowAsync("nmcli", args, cancellationToken);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("Not authorized to control networking", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "NetworkManager refused the connect: polkit requires a local+active session. " +
+                "Over SSH on a headless host, drop a polkit override like:\n" +
+                "  sudo tee /etc/polkit-1/rules.d/50-ecoplug.rules > /dev/null <<'EOF'\n" +
+                "  polkit.addRule(function(action, subject) {\n" +
+                "      if (action.id.indexOf(\"org.freedesktop.NetworkManager.\") == 0 && subject.user == \"" + Environment.UserName + "\") {\n" +
+                "          return polkit.Result.YES;\n" +
+                "      }\n" +
+                "  });\n" +
+                "  EOF",
+                ex);
+        }
     }
 
     public async Task DisconnectAsync(CancellationToken cancellationToken)
