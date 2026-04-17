@@ -25,6 +25,10 @@ dotnet run --project EcoPlugSender -- rename --current-name "office temp11" --ne
 dotnet run --project EcoPlugSender -- rename --current-name "office temp11" --new-name "office temp12" --dry-run --decode
 dotnet run --project EcoPlugSender -- decode --hex "16 00 05 00 00 00 27 56 02 00 31 2E 36 2E 33 00"
 dotnet run --project EcoPlugSender -- pcap-timeline --pcap /mnt/c/Users/baouchiy/Downloads/PCAPdroid_09_Apr_01_06_42.pcap --plug-ip 192.168.68.126
+dotnet run --project EcoPlugSender -- discover --timeout-ms 5000 --decode
+dotnet run --project EcoPlugSender -- find-plugs
+dotnet run --project EcoPlugSender -- provision --ssid HomeWifi --password secret --zip 02139 --dry-run --decode
+dotnet run --project EcoPlugSender -- configure --ssid HomeWifi --password secret --zip 02139
 ```
 
 Shared defaults:
@@ -51,3 +55,13 @@ In normal use, `rename` only needs `--current-name` and `--new-name`. When used 
 The `office temp4 -> office temp5` capture also showed repeated 128-byte broadcast UDP packets to `255.255.255.255:5888` and `255.255.255.255:25` while the app displayed a “connecting” dialog. Those packets are mostly zeros except for the date/counter bytes, and `rename` replays that traffic in the background because it is still part of the app’s observable session behavior.
 
 `pcap-timeline --pcap ...` prints a relative-time view of a capture. With `--plug-ip`, it keeps packets involving the plug plus the surrounding broadcast and DNS traffic, which is useful for comparing successful phone rename sessions against failed PC replays.
+
+`discover` broadcasts the 128-byte "connecting" probe to `255.255.255.255:25` and collects replies for `--timeout-ms` (default 3000). With `--decode`, each reply is parsed for plug id, stored name, and reported IP/port, which is how the phone app enumerates plugs on the LAN.
+
+`provision` builds and sends the 492-byte first-time-setup packet used when a plug is in AP mode. Required fields: `--ssid`, `--password`, `--zip`. The packet embeds the SSID/passphrase the plug should join plus the cloud endpoints, country code `001`, and the hardware token the stock app uses. Default target is `192.168.4.1:80` (the plug's AP-mode address). Use `--dry-run --decode` to inspect the packet without sending.
+
+`find-plugs` scans nearby WiFi for SSIDs matching `ECO-XXXXXXXX` (the factory AP name of an unconfigured plug). Pass `--all` to print every scanned SSID instead of filtering.
+
+`configure` orchestrates the full first-time setup: remember the current SSID → scan for an `ECO-*` plug AP (or use `--plug-ap` to target one by name) → join it as an open network → wait for a `192.168.4.x` lease → send the provision packet to `192.168.4.1:80` → reconnect the host to the original SSID → wait briefly → run `discover` so the freshly provisioned plug shows up on the home LAN. Required fields mirror `provision` (`--ssid`, `--password`, `--zip`).
+
+WiFi control for `find-plugs` and `configure` is platform-specific: Windows uses the Native WiFi API (`wlanapi.dll`) for scans and `netsh wlan` for connect/disconnect, Linux uses `nmcli`, and macOS uses `networksetup` plus the legacy `airport` tool. On Windows 10+, scan results require Location Services enabled (Settings → Privacy → Location, including "Let desktop apps access your location").
