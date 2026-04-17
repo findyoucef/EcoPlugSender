@@ -14,6 +14,8 @@ It currently supports:
 - first-time plug provisioning with `provision`
 - plug AP scanning with `find-plugs`
 - end-to-end factory-reset setup with `configure`
+- cloud-relayed power control with `cloud-on` / `cloud-off`
+- cloud session management with `cloud-enroll` / `cloud-unenroll`
 
 This is not a generic networking library. It is a focused reverse-engineering utility for one ECO plug protocol family.
 
@@ -160,6 +162,22 @@ Important expectations:
 - `sequenceBytes`, `field116`, and `field124` are generated fresh per run (same rule as rename — do not reintroduce hard-coded values from a single capture)
 
 `configure` orchestrates scan → join plug AP → wait for `192.168.4.x` → send provision packet → reconnect host → `discover`. `provision` is the raw packet send for when you've already joined the plug AP yourself.
+
+### Cloud Wrapper Packets
+
+The cloud-path commands (`cloud-on`, `cloud-off`, `cloud-enroll`, `cloud-unenroll`) wrap a standard ECO inner packet inside a 1092-byte rendezvous frame and send it to `203.66.65.34:11621`. The server forwards the inner packet to the plug (the plug keeps a NAT keepalive to the rendezvous server) and returns the plug's reply inside a matching wrapper.
+
+Important expectations:
+
+- wrapper outer marker: `9a 0c 00 00 d9 09 00 00`
+- client-chosen 4-byte session key at wrapper `[0x08..0x0b]` MUST equal the inner packet's `field124` (inner bytes `124..127`)
+- inner length (LE u32) lives at wrapper `[0x40..0x43]`; inner bytes start at `[0x44]`
+- hardware token `SLqfKrdnFM` lives at `[0x0c..0x15]`, shared across all plugs
+- `sequenceBytes`, `field116`, and `field124` must be freshly randomized per run on the cloud path (same rule as rename/provision — reusing the LAN's hard-coded constants lets the relay ACK but the plug silently refuses to toggle)
+- cloud OFF requires a 130-byte inner cmd=0x16 (tail `01 00`), not the 129-byte LAN OFF shape — pad with one trailing zero
+- `cloud-unenroll` is a cmd=0x17 read with a fresh random session key; it invalidates the prior session at the relay, so subsequent `cloud-on`/`cloud-off` get zero responses until `cloud-enroll` (wrapped cmd=0x05) revives the session
+
+`BuildCloudWrapperPacket` in `EcoPlugPacketBuilder.cs` enforces the wrapper shape. Do not add a LAN-style fallback that reuses the fixed constants — cloud-path testing must validate physical toggle, not just "relay ACK'd."
 
 ## WiFi Control
 

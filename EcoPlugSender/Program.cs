@@ -15,7 +15,10 @@ internal enum EcoPlugMode
     Provision,
     FindPlugs,
     Configure,
+    CloudOn,
+    CloudOff,
     CloudEnroll,
+    CloudUnenroll,
 }
 
 internal static class App
@@ -64,9 +67,19 @@ internal static class App
                 return await ExecuteConfigureAsync(options);
             }
 
+            if (options.Mode is EcoPlugMode.CloudOn or EcoPlugMode.CloudOff)
+            {
+                return await ExecuteCloudControlAsync(options);
+            }
+
             if (options.Mode == EcoPlugMode.CloudEnroll)
             {
                 return await ExecuteCloudEnrollAsync(options);
+            }
+
+            if (options.Mode == EcoPlugMode.CloudUnenroll)
+            {
+                return await ExecuteCloudUnenrollAsync(options);
             }
 
             if (options.Mode == EcoPlugMode.Rename)
@@ -180,7 +193,9 @@ internal static class App
         Console.WriteLine("  EcoPlugSender provision --ssid <ssid> --password <pass> --zip <zip> [--name <name>] [--plug-id <id>] [--ip <address>] [--port <port>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender find-plugs");
         Console.WriteLine("  EcoPlugSender configure --ssid <home-ssid> --password <home-pass> --zip <zip> [--plug-ap <ECO-XXXXXXXX>] [--name <name>]");
-        Console.WriteLine("  EcoPlugSender cloud-enroll [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender <cloud-on|cloud-off> [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender cloud-enroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender cloud-unenroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender decode --hex \"16 00 05 00 ...\"");
         Console.WriteLine("  EcoPlugSender pcap-timeline --pcap <file> [--plug-ip <address>]");
         Console.WriteLine();
@@ -450,30 +465,41 @@ internal static class App
         return 0;
     }
 
-    private static async Task<int> ExecuteCloudEnrollAsync(EcoPlugOptions options)
+    private static async Task<int> ExecuteCloudControlAsync(EcoPlugOptions options)
     {
+        var state = options.PowerState!.Value;
+        // Cloud path requires fresh per-session values for sequence / field116 / field124
+        // (the LAN constants from BuildWritePacket get ACK'd but the plug ignores them).
         var sequenceBytes = GenerateSequenceBytes();
         var field116 = GenerateRandomBytes(4);
         var field124 = GenerateRandomBytes(4);
+        var innerPacket = EcoPlugPacketBuilder.BuildWritePacketWithSession(
+            options.PlugId!, options.PlugName!, state, sequenceBytes, field116, field124);
+        // Cloud relay requires a 130-byte inner for cmd=0x16. OFF produces 129 bytes
+        // (tail 0x01); pad with a trailing zero so the relay accepts it.
+        if (innerPacket.Length < 130)
+        {
+            var padded = new byte[130];
+            Buffer.BlockCopy(innerPacket, 0, padded, 0, innerPacket.Length);
+            innerPacket = padded;
+        }
+        // Outer session key must equal inner field124 (observed in every phone-side capture).
+        var sessionKey = (byte[])field124.Clone();
+        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey);
+        var stateLabel = state.ToString().ToLowerInvariant();
 
-        var packet = EcoPlugPacketBuilder.BuildInfoPacket(
-            options.PlugId!,
-            options.PlugName!,
-            sequenceBytes,
-            field116,
-            field124);
-
-        Console.WriteLine($"Built {packet.Length}-byte cloud-enroll (cmd=0x05) packet for {options.PlugId}.");
+        Console.WriteLine($"Built {wrapped.Length}-byte cloud wrapper for {options.PlugId} ({stateLabel}). Inner: {innerPacket.Length}-byte cmd=0x16.");
 
         if (options.PrintPacket || options.DryRun)
         {
-            Console.WriteLine(PacketHex.Format(packet));
+            Console.WriteLine(PacketHex.Format(wrapped));
         }
 
         if (options.PrintDecode)
         {
             Console.WriteLine();
-            Console.WriteLine(EcoPlugPacketDecoder.Describe(packet));
+            Console.WriteLine("Inner request:");
+            Console.WriteLine(EcoPlugPacketDecoder.Describe(innerPacket));
         }
 
         if (options.DryRun)
@@ -482,23 +508,123 @@ internal static class App
             return 0;
         }
 
+        return await SendCloudWrapperAsync(options, wrapped, $"cloud-{stateLabel}", expectedInnerCommand: 0x16);
+    }
+
+    private static async Task<int> ExecuteCloudUnenrollAsync(EcoPlugOptions options)
+    {
+        var sequenceBytes = GenerateSequenceBytes();
+        var field116 = GenerateRandomBytes(4);
+        var field124 = GenerateRandomBytes(4);
+        var innerPacket = EcoPlugPacketBuilder.BuildReadPacket(options.PlugId!, options.PlugName!, sequenceBytes, field116, field124);
+        var sessionKey = (byte[])field124.Clone();
+        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey);
+
+        Console.WriteLine($"Built {wrapped.Length}-byte cloud wrapper for {options.PlugId} (unenroll). Inner: {innerPacket.Length}-byte cmd=0x17 read with fresh session key.");
+
+        if (options.PrintPacket || options.DryRun)
+        {
+            Console.WriteLine(PacketHex.Format(wrapped));
+        }
+
+        if (options.PrintDecode)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Inner request:");
+            Console.WriteLine(EcoPlugPacketDecoder.Describe(innerPacket));
+        }
+
+        if (options.DryRun)
+        {
+            Console.WriteLine("Dry run only. Packet was not sent.");
+            return 0;
+        }
+
+        return await SendCloudWrapperAsync(options, wrapped, "cloud-unenroll", expectedInnerCommand: 0x17);
+    }
+
+    private static async Task<int> ExecuteCloudEnrollAsync(EcoPlugOptions options)
+    {
+        var sequenceBytes = GenerateSequenceBytes();
+        var field116 = GenerateRandomBytes(4);
+        var field124 = GenerateRandomBytes(4);
+        var innerPacket = EcoPlugPacketBuilder.BuildInfoPacket(options.PlugId!, options.PlugName!, sequenceBytes, field116, field124);
+        var sessionKey = (byte[])field124.Clone();
+        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey);
+
+        Console.WriteLine($"Built {wrapped.Length}-byte cloud wrapper for {options.PlugId} (enroll via cmd=0x05 lookup). Inner: {innerPacket.Length}-byte cmd=0x05.");
+
+        if (options.PrintPacket || options.DryRun)
+        {
+            Console.WriteLine(PacketHex.Format(wrapped));
+        }
+
+        if (options.PrintDecode)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Inner request:");
+            Console.WriteLine(EcoPlugPacketDecoder.Describe(innerPacket));
+        }
+
+        if (options.DryRun)
+        {
+            Console.WriteLine("Dry run only. Packet was not sent.");
+            return 0;
+        }
+
+        return await SendCloudWrapperAsync(options, wrapped, "cloud-enroll", expectedInnerCommand: 0x05);
+    }
+
+    private static async Task<int> SendCloudWrapperAsync(EcoPlugOptions options, byte[] wrapped, string label, byte expectedInnerCommand)
+    {
         using var client = EcoPlugClient.OpenClient();
         var endpoint = new IPEndPoint(options.IpAddress!, options.Port);
-        var responses = await EcoPlugClient.SendAndReceiveAsync(client, endpoint, packet, duplicateCount: 2, duplicateGapMs: 250, responseIdleTimeoutMs: 1500);
+        var responses = await EcoPlugClient.SendAndReceiveAsync(client, endpoint, wrapped, duplicateCount: 2, duplicateGapMs: 250, responseIdleTimeoutMs: 2500);
 
-        Console.WriteLine($"Sent UDP packet to {options.IpAddress}:{options.Port}.");
-        Console.WriteLine($"Received {responses.Count} UDP responses.");
+        Console.WriteLine($"Sent cloud wrapper to {options.IpAddress}:{options.Port}. Received {responses.Count} responses.");
 
-        var tokenReply = responses.FirstOrDefault(r => r.Payload.Length == 492 && r.Payload.Length >= 4 && r.Payload[0] == 0x05);
-        if (tokenReply is null)
+        var first = responses.FirstOrDefault();
+        if (first is null)
         {
-            Console.WriteLine("No 492-byte cmd=0x05 reply observed. Plug may not be reachable or already enrolled.");
+            Console.WriteLine("No response from cloud server. Plug may be offline or rendezvous unreachable.");
+            return 2;
+        }
+
+        var parsed = EcoPlugPacketInspector.InspectCloudWrapperResponse(first.Payload);
+        if (parsed is null)
+        {
+            Console.WriteLine("Response did not look like a 1092-byte cloud wrapper frame.");
+            if (options.PrintPacket)
+            {
+                Console.WriteLine(PacketHex.Format(first.Payload));
+            }
+            return 2;
+        }
+
+        if (!string.IsNullOrEmpty(parsed.PlugWanIp) && parsed.PlugWanPort is int plugPort)
+        {
+            Console.WriteLine($"Plug WAN endpoint: {parsed.PlugWanIp}:{plugPort}");
         }
         else
         {
-            var tokenHex = Convert.ToHexString(tokenReply.Payload, 112, 4).ToLowerInvariant();
-            Console.WriteLine($"Cloud token (bytes 112..115 of reply): {tokenHex}");
-            Console.WriteLine("Note: the 492-byte reply also echoes the plug's stored home WiFi password in cleartext. Use --decode to inspect.");
+            Console.WriteLine("Plug WAN endpoint not present in response (possible rejection or unknown plug).");
+        }
+
+        if (parsed.InnerLength > 0 && parsed.InnerPacket.Length > 0)
+        {
+            var innerCmd = parsed.InnerPacket[0];
+            if (innerCmd == expectedInnerCommand)
+            {
+                Console.WriteLine($"Plug ACK'd inner cmd=0x{innerCmd:x2} (length {parsed.InnerLength}).");
+            }
+            else
+            {
+                Console.WriteLine($"Inner reply cmd=0x{innerCmd:x2}, length={parsed.InnerLength} (expected 0x{expectedInnerCommand:x2}).");
+            }
+        }
+        else
+        {
+            Console.WriteLine("Inner reply absent from response.");
         }
 
         if (options.PrintDecode)
@@ -508,8 +634,16 @@ internal static class App
             {
                 index++;
                 Console.WriteLine();
-                Console.WriteLine($"[cloud-enroll response {index} from {response.RemoteEndPoint}]");
-                Console.WriteLine(EcoPlugPacketDecoder.Describe(response.Payload));
+                Console.WriteLine($"[{label} response {index} from {response.RemoteEndPoint}]");
+                var innerParsed = EcoPlugPacketInspector.InspectCloudWrapperResponse(response.Payload);
+                if (innerParsed is { InnerPacket.Length: > 0 })
+                {
+                    Console.WriteLine(EcoPlugPacketDecoder.Describe(innerParsed.InnerPacket));
+                }
+                else
+                {
+                    Console.WriteLine(PacketHex.Format(response.Payload));
+                }
             }
         }
 
@@ -838,6 +972,8 @@ internal sealed record EcoPlugOptions(
     private const int DefaultPort = 80;
     private const string DefaultPlugId = "ECO-7806EDD6";
     private const string DefaultPlugName = "Heater";
+    internal const string DefaultCloudServerIp = "203.66.65.34";
+    internal const int DefaultCloudServerPort = 11621;
     internal const int DefaultDiscoverDurationMs = 5000;
 
     public static EcoPlugOptions Parse(string[] args)
@@ -866,8 +1002,14 @@ internal sealed record EcoPlugOptions(
                 ? ParseFindPlugsMode(args[1..])
             : args[0].Equals("configure", StringComparison.OrdinalIgnoreCase)
                 ? ParseConfigureMode(args[1..])
+            : args[0].Equals("cloud-on", StringComparison.OrdinalIgnoreCase)
+                ? ParseCloudControlMode(args[1..], PlugPowerState.On)
+            : args[0].Equals("cloud-off", StringComparison.OrdinalIgnoreCase)
+                ? ParseCloudControlMode(args[1..], PlugPowerState.Off)
             : args[0].Equals("cloud-enroll", StringComparison.OrdinalIgnoreCase)
                 ? ParseCloudEnrollMode(args[1..])
+            : args[0].Equals("cloud-unenroll", StringComparison.OrdinalIgnoreCase)
+                ? ParseCloudUnenrollMode(args[1..])
             : ParseBuildMode(args);
     }
 
@@ -989,10 +1131,25 @@ internal sealed record EcoPlugOptions(
             zipCode);
     }
 
+    private static EcoPlugOptions ParseCloudControlMode(string[] args, PlugPowerState state)
+    {
+        return ParseCloudCommon(args, state == PlugPowerState.On ? EcoPlugMode.CloudOn : EcoPlugMode.CloudOff, state);
+    }
+
     private static EcoPlugOptions ParseCloudEnrollMode(string[] args)
     {
-        var ipText = DefaultIp;
-        var port = DefaultPort;
+        return ParseCloudCommon(args, EcoPlugMode.CloudEnroll, null);
+    }
+
+    private static EcoPlugOptions ParseCloudUnenrollMode(string[] args)
+    {
+        return ParseCloudCommon(args, EcoPlugMode.CloudUnenroll, null);
+    }
+
+    private static EcoPlugOptions ParseCloudCommon(string[] args, EcoPlugMode mode, PlugPowerState? state)
+    {
+        var serverIp = DefaultCloudServerIp;
+        var serverPort = DefaultCloudServerPort;
         var plugId = DefaultPlugId;
         var plugName = DefaultPlugName;
         var dryRun = false;
@@ -1030,19 +1187,19 @@ internal sealed record EcoPlugOptions(
 
             if (!arg.StartsWith("-", StringComparison.Ordinal))
             {
-                throw new ArgumentException($"Unexpected argument in cloud-enroll mode: {arg}");
+                throw new ArgumentException($"Unexpected argument in {ModeCommandName(mode)} mode: {arg}");
             }
 
             var value = ReadOptionValue(args, ref i, arg);
             switch (arg)
             {
-                case "--ip":
-                    ipText = value;
+                case "--server":
+                    serverIp = value;
                     break;
-                case "--port":
-                    if (!int.TryParse(value, out port) || port is < 1 or > 65535)
+                case "--server-port":
+                    if (!int.TryParse(value, out serverPort) || serverPort is < 1 or > 65535)
                     {
-                        throw new ArgumentException("Port must be a number between 1 and 65535.");
+                        throw new ArgumentException("Server port must be a number between 1 and 65535.");
                     }
                     break;
                 case "--plug-id":
@@ -1058,16 +1215,25 @@ internal sealed record EcoPlugOptions(
 
         if (showHelp)
         {
-            return new EcoPlugOptions(EcoPlugMode.CloudEnroll, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+            return new EcoPlugOptions(mode, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
         }
 
-        if (!IPAddress.TryParse(ipText, out var ipAddress))
+        if (!IPAddress.TryParse(serverIp, out var serverAddress))
         {
-            throw new ArgumentException($"Invalid IP address: {ipText}");
+            throw new ArgumentException($"Invalid server IP address: {serverIp}");
         }
 
-        return new EcoPlugOptions(EcoPlugMode.CloudEnroll, null, ipAddress, port, plugId, plugName, null, null, dryRun, printPacket, printDecode, null, false);
+        return new EcoPlugOptions(mode, state, serverAddress, serverPort, plugId, plugName, null, null, dryRun, printPacket, printDecode, null, false);
     }
+
+    private static string ModeCommandName(EcoPlugMode mode) => mode switch
+    {
+        EcoPlugMode.CloudOn => "cloud-on",
+        EcoPlugMode.CloudOff => "cloud-off",
+        EcoPlugMode.CloudEnroll => "cloud-enroll",
+        EcoPlugMode.CloudUnenroll => "cloud-unenroll",
+        _ => mode.ToString(),
+    };
 
     private static EcoPlugOptions ParseProvisionMode(string[] args)
     {

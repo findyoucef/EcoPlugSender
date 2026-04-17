@@ -10,8 +10,43 @@ internal sealed record EcoPlugPacketFields(
     byte[] Field124Bytes,
     byte[] TailBytes);
 
+internal sealed record CloudWrapperResponse(
+    string? PlugWanIp,
+    int? PlugWanPort,
+    int InnerLength,
+    byte[] InnerPacket);
+
 internal static class EcoPlugPacketInspector
 {
+    public static CloudWrapperResponse? InspectCloudWrapperResponse(byte[] packet)
+    {
+        if (packet.Length < 0x44 + 4)
+        {
+            return null;
+        }
+
+        if (packet[0] != 0x9A || packet[1] != 0x0C)
+        {
+            return null;
+        }
+
+        var ipString = Encoding.ASCII.GetString(packet, 0x1C, 16).TrimEnd('\0');
+        string? plugWanIp = string.IsNullOrWhiteSpace(ipString) ? null : ipString;
+
+        var portValue = BitConverter.ToUInt32(packet, 0x34);
+        int? plugWanPort = portValue is > 0 and <= 0xFFFF ? (int)portValue : null;
+
+        var innerLength = (int)BitConverter.ToUInt32(packet, 0x40);
+        byte[] innerPacket = [];
+        if (innerLength > 0 && 0x44 + innerLength <= packet.Length)
+        {
+            innerPacket = packet[0x44..(0x44 + innerLength)];
+        }
+
+        return new CloudWrapperResponse(plugWanIp, plugWanPort, innerLength, innerPacket);
+    }
+
+
     public static EcoPlugPacketFields Inspect(byte[] packet)
     {
         return new EcoPlugPacketFields(

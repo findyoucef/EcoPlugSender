@@ -29,6 +29,10 @@ dotnet run --project EcoPlugSender -- discover --timeout-ms 5000 --decode
 dotnet run --project EcoPlugSender -- find-plugs
 dotnet run --project EcoPlugSender -- provision --ssid HomeWifi --password secret --zip 02139 --dry-run --decode
 dotnet run --project EcoPlugSender -- configure --ssid HomeWifi --password secret --zip 02139
+dotnet run --project EcoPlugSender -- cloud-on
+dotnet run --project EcoPlugSender -- cloud-off
+dotnet run --project EcoPlugSender -- cloud-enroll
+dotnet run --project EcoPlugSender -- cloud-unenroll
 ```
 
 Shared defaults:
@@ -80,3 +84,13 @@ EOF
 ```
 
 Remove it with `sudo rm /etc/polkit-1/rules.d/50-ecoplug.rules` when you're done. Desktop/local sessions don't need this.
+
+## Cloud Control
+
+`cloud-on`, `cloud-off`, `cloud-enroll`, and `cloud-unenroll` drive the plug through the ECO rendezvous server at `203.66.65.34:11621` instead of talking directly to the plug on the LAN. Default server/port are baked in; override with `--server <ip>` / `--server-port <port>` if needed.
+
+- `cloud-on` / `cloud-off` wrap a cmd=0x16 power packet in the 1092-byte rendezvous frame and send to the server, which relays it to the plug.
+- `cloud-enroll` wraps a cmd=0x05 info lookup. On a plug whose cloud session has lapsed (fresh from factory, long idle, or after `cloud-unenroll`), run this once to re-establish session state before `cloud-on`/`cloud-off` will toggle again.
+- `cloud-unenroll` wraps a cmd=0x17 read with a fresh random session key, which mirrors what the Android app sends when you tap "unenroll". Subsequent `cloud-on`/`cloud-off` requests get no reply from the relay until you run `cloud-enroll`.
+
+All four accept the usual `--dry-run`, `--print-packet`, and `--decode` flags for packet inspection without sending.
