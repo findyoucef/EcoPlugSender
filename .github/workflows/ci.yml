@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Install Linux AOT prerequisites
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Build
+        run: dotnet build EcoPlugSender/EcoPlugSender.csproj -c Release
+
+      - name: Verify AOT publish
+        run: dotnet publish EcoPlugSender/EcoPlugSender.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true --self-contained true -o publish-${{ matrix.rid }}

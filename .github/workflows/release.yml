@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            artifact: EcoPlugSender-win-x64.exe
+            binary: EcoPlugSender.exe
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact: EcoPlugSender-linux-x64
+            binary: EcoPlugSender
+          - os: macos-latest
+            rid: osx-arm64
+            artifact: EcoPlugSender-osx-arm64
+            binary: EcoPlugSender
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Install Linux AOT prerequisites
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish AOT single-file native binary
+        run: dotnet publish EcoPlugSender/EcoPlugSender.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true --self-contained true -o publish
+
+      - name: Rename artifact
+        shell: bash
+        run: mv publish/${{ matrix.binary }} ${{ matrix.artifact }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
