@@ -107,32 +107,50 @@ internal static class WindowsNativeWifi
                 WlanFreeMemory(interfaceListPtr);
             }
 
-            var scanResult = WlanScan(handle, ref interfaceGuid, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
-            if (scanResult != ErrorSuccess)
+            var results = await ScanOnceAsync(handle, interfaceGuid, waitAfterScan, cancellationToken);
+            if (results.Count == 0)
             {
-                throw new InvalidOperationException($"WlanScan failed: 0x{scanResult:X8}");
+                results = await ScanOnceAsync(handle, interfaceGuid, waitAfterScan + TimeSpan.FromSeconds(4), cancellationToken);
             }
 
-            await Task.Delay(waitAfterScan, cancellationToken);
-
-            var bssResult = WlanGetNetworkBssList(handle, ref interfaceGuid, IntPtr.Zero, 1 /* infrastructure */, false, IntPtr.Zero, out var bssListPtr);
-            if (bssResult != ErrorSuccess)
+            if (results.Count == 0)
             {
-                throw new InvalidOperationException($"WlanGetNetworkBssList failed: 0x{bssResult:X8}");
+                throw new InvalidOperationException(
+                    "Windows WLAN scan returned no networks. On Windows 10+, this usually means Location Services are disabled. " +
+                    "Enable Settings -> Privacy -> Location (both the services toggle and \"Let desktop apps access your location\"), then retry.");
             }
 
-            try
-            {
-                return ParseBssList(bssListPtr);
-            }
-            finally
-            {
-                WlanFreeMemory(bssListPtr);
-            }
+            return results;
         }
         finally
         {
             WlanCloseHandle(handle, IntPtr.Zero);
+        }
+    }
+
+    private static async Task<IReadOnlyList<WifiNetwork>> ScanOnceAsync(IntPtr handle, Guid interfaceGuid, TimeSpan waitAfterScan, CancellationToken cancellationToken)
+    {
+        var scanResult = WlanScan(handle, ref interfaceGuid, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        if (scanResult != ErrorSuccess)
+        {
+            throw new InvalidOperationException($"WlanScan failed: 0x{scanResult:X8}");
+        }
+
+        await Task.Delay(waitAfterScan, cancellationToken);
+
+        var bssResult = WlanGetNetworkBssList(handle, ref interfaceGuid, IntPtr.Zero, 1 /* infrastructure */, false, IntPtr.Zero, out var bssListPtr);
+        if (bssResult != ErrorSuccess)
+        {
+            throw new InvalidOperationException($"WlanGetNetworkBssList failed: 0x{bssResult:X8}");
+        }
+
+        try
+        {
+            return ParseBssList(bssListPtr);
+        }
+        finally
+        {
+            WlanFreeMemory(bssListPtr);
         }
     }
 
