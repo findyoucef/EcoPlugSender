@@ -65,3 +65,18 @@ The `office temp4 -> office temp5` capture also showed repeated 128-byte broadca
 `configure` orchestrates the full first-time setup: remember the current SSID → scan for an `ECO-*` plug AP (or use `--plug-ap` to target one by name) → join it as an open network → wait for a `192.168.4.x` lease → send the provision packet to `192.168.4.1:80` → reconnect the host to the original SSID → wait briefly → run `discover` so the freshly provisioned plug shows up on the home LAN. Required fields mirror `provision` (`--ssid`, `--password`, `--zip`).
 
 WiFi control for `find-plugs` and `configure` is platform-specific: Windows uses the Native WiFi API (`wlanapi.dll`) for scans and `netsh wlan` for connect/disconnect, Linux uses `nmcli`, and macOS uses `networksetup` plus the legacy `airport` tool. On Windows 10+, scan results require Location Services enabled (Settings → Privacy → Location, including "Let desktop apps access your location").
+
+On a headless Linux host reached over SSH, NetworkManager's default polkit rule refuses `nmcli` connect/disconnect because the session isn't `local+active`. To allow the tool to drive WiFi over SSH, drop a polkit override for your user:
+
+```
+sudo tee /etc/polkit-1/rules.d/50-ecoplug.rules > /dev/null <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0 &&
+        subject.user == "YOUR_USERNAME") {
+        return polkit.Result.YES;
+    }
+});
+EOF
+```
+
+Remove it with `sudo rm /etc/polkit-1/rules.d/50-ecoplug.rules` when you're done. Desktop/local sessions don't need this.
