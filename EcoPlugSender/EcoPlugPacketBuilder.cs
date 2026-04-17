@@ -14,6 +14,22 @@ internal static class EcoPlugPacketBuilder
     private static readonly byte[] InfoCommandHeader = { 0x05, 0x00, 0x05, 0x00 };
     private static readonly byte[] ReadCommandHeader = { 0x17, 0x00, 0x05, 0x00 };
     private static readonly byte[] CommitCommandHeader = { 0x23, 0x00, 0x05, 0x00 };
+    private static readonly byte[] ProvisionCommandHeader = { 0x04, 0x00, 0x05, 0x00 };
+
+    private static readonly byte[] ProvisionMarkerBlock1 = { 0xEA, 0x17, 0x04, 0x11, 0x17, 0x0F, 0x00, 0x00 };
+    private static readonly byte[] ProvisionMarkerBlock2 = { 0x10, 0x2D, 0xFF, 0xFF };
+    private static readonly byte[] ProvisionPriorityBlock =
+    {
+        0x01, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00,
+    };
+    private static readonly byte[] ProvisionFlagsBlock = { 0x00, 0x03, 0x00, 0x00, 0x01, 0x00 };
+    private const string ProvisionCloudIp1 = "203.66.65.34";
+    private const string ProvisionCloudIp2 = "203.66.65.34";
+    private const string ProvisionCloudIp3 = "61.220.255.143";
+    private const string ProvisionCountryCode = "001";
+    private const string ProvisionHardwareToken = "SLqfKrdnFM";
 
     private static readonly byte[] PowerSequence = { 0x00, 0x00, 0x27, 0x56 };
     private static readonly byte[] CommitBody = { 0x01, 0x00 };
@@ -91,6 +107,73 @@ internal static class EcoPlugPacketBuilder
 
     public static byte[] BuildCommitPacket(string plugId, string currentName, byte[] sequenceBytes, byte[] field116, byte[] field124)
         => BuildPacket(CommitCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, LengthAsMarker(CommitBody.Length), CommitBody).ToArray();
+
+    public static byte[] BuildProvisionPacket(
+        string plugId,
+        string plugName,
+        string ssid,
+        string password,
+        string zipCode,
+        byte[] sequenceBytes,
+        byte[] field116,
+        byte[] field124)
+    {
+        var normalizedPlugId = NormalizeFullPlugId(plugId);
+        var barePlugId = StripEcoPrefix(normalizedPlugId);
+
+        ValidateAsciiField("plug ID", normalizedPlugId, 16);
+        ValidateAsciiField("plug name", plugName, 32);
+        ValidateAsciiField("bare plug ID", barePlugId, 16);
+        ValidateAsciiField("SSID", ssid, 32);
+        ValidateAsciiField("password", password, 32);
+        ValidateAsciiField("zip code", zipCode, 12);
+
+        var extension = BuildProvisionExtension(normalizedPlugId, plugName, barePlugId, ssid, password, zipCode);
+
+        return BuildPacket(
+            headerBytes: ProvisionCommandHeader,
+            plugId: normalizedPlugId,
+            plugName: plugName,
+            sequenceBytes: sequenceBytes,
+            field116: field116,
+            field124: field124,
+            commandMarker: LengthAsMarker(extension.Length),
+            trailingBytes: extension).ToArray();
+    }
+
+    private static byte[] BuildProvisionExtension(
+        string plugId,
+        string plugName,
+        string barePlugId,
+        string ssid,
+        string password,
+        string zipCode)
+    {
+        var ext = new List<byte>(364);
+        ext.AddRange(FirmwareVersion);
+        ext.Add(0x00);
+        WritePaddedAscii(ext, plugId, 16);
+        ext.AddRange(new byte[16]);
+        WritePaddedAscii(ext, plugName, 32);
+        WritePaddedAscii(ext, barePlugId, 16);
+        ext.AddRange(new byte[18]);
+        ext.AddRange(ProvisionMarkerBlock1);
+        ext.AddRange(ProvisionMarkerBlock2);
+        WritePaddedAscii(ext, ssid, 32);
+        ext.AddRange(new byte[32]);
+        WritePaddedAscii(ext, password, 32);
+        ext.AddRange(new byte[34]);
+        WritePaddedAscii(ext, ProvisionCountryCode, 10);
+        WritePaddedAscii(ext, zipCode, 12);
+        WritePaddedAscii(ext, ProvisionCloudIp1, 16);
+        WritePaddedAscii(ext, ProvisionCloudIp2, 16);
+        WritePaddedAscii(ext, ProvisionCloudIp3, 16);
+        ext.AddRange(ProvisionPriorityBlock);
+        ext.AddRange(ProvisionFlagsBlock);
+        WritePaddedAscii(ext, ProvisionHardwareToken, 10);
+        ext.AddRange(new byte[20]);
+        return ext.ToArray();
+    }
 
     public static byte[] BuildConnectingBroadcastPacket(uint counter)
     {

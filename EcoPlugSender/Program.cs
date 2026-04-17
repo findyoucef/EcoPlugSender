@@ -12,6 +12,9 @@ internal enum EcoPlugMode
     Discover,
     PcapTimeline,
     Rename,
+    Provision,
+    FindPlugs,
+    Configure,
 }
 
 internal static class App
@@ -43,6 +46,21 @@ internal static class App
             if (options.Mode == EcoPlugMode.Discover)
             {
                 return await ExecuteDiscoverAsync(options);
+            }
+
+            if (options.Mode == EcoPlugMode.Provision)
+            {
+                return await ExecuteProvisionAsync(options);
+            }
+
+            if (options.Mode == EcoPlugMode.FindPlugs)
+            {
+                return await ExecuteFindPlugsAsync(options);
+            }
+
+            if (options.Mode == EcoPlugMode.Configure)
+            {
+                return await ExecuteConfigureAsync(options);
             }
 
             if (options.Mode == EcoPlugMode.Rename)
@@ -153,6 +171,9 @@ internal static class App
         Console.WriteLine("  EcoPlugSender <on|off> [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender rename --current-name <name> --new-name <name> [--ip <address>] [--port <port>] [--plug-id <id>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender discover [--timeout-ms <ms>] [--decode]");
+        Console.WriteLine("  EcoPlugSender provision --ssid <ssid> --password <pass> --zip <zip> [--name <name>] [--plug-id <id>] [--ip <address>] [--port <port>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender find-plugs");
+        Console.WriteLine("  EcoPlugSender configure --ssid <home-ssid> --password <home-pass> --zip <zip> [--plug-ap <ECO-XXXXXXXX>] [--name <name>]");
         Console.WriteLine("  EcoPlugSender decode --hex \"16 00 05 00 ...\"");
         Console.WriteLine("  EcoPlugSender pcap-timeline --pcap <file> [--plug-ip <address>]");
         Console.WriteLine();
@@ -245,6 +266,181 @@ internal static class App
         }
 
         return packets;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex PlugApPattern =
+        new("^ECO-[0-9A-F]{8}$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    private static async Task<int> ExecuteFindPlugsAsync(EcoPlugOptions options)
+    {
+        var showAll = options.PrintPacket;
+        var controller = WifiController.Create();
+        Console.WriteLine("Scanning for nearby WiFi networks...");
+        var networks = await controller.ScanAsync(CancellationToken.None);
+        Console.WriteLine($"Scan returned {networks.Count} SSIDs.");
+
+        if (showAll)
+        {
+            foreach (var net in networks.OrderByDescending(n => n.SignalPercent ?? -1))
+            {
+                var signal = net.SignalPercent is int s ? $"{s}%" : "?";
+                var marker = PlugApPattern.IsMatch(net.Ssid) ? " [PLUG]" : string.Empty;
+                Console.WriteLine($"  \"{net.Ssid}\"  signal={signal}  {(net.IsOpen ? "open" : "secured")}{marker}");
+            }
+
+            return 0;
+        }
+
+        var plugs = networks.Where(n => PlugApPattern.IsMatch(n.Ssid)).ToList();
+        if (plugs.Count == 0)
+        {
+            Console.WriteLine("No ECO plug APs matched. Use --all to list every SSID the scan saw.");
+            return 0;
+        }
+
+        Console.WriteLine($"Found {plugs.Count} plug AP{(plugs.Count == 1 ? "" : "s")}:");
+        foreach (var plug in plugs)
+        {
+            var signal = plug.SignalPercent is int s ? $"{s}%" : "?";
+            Console.WriteLine($"  {plug.Ssid}  signal={signal}  {(plug.IsOpen ? "open" : "secured")}");
+        }
+
+        return 0;
+    }
+
+    private static async Task<int> ExecuteConfigureAsync(EcoPlugOptions options)
+    {
+        var controller = WifiController.Create();
+        var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+
+        var originalSsid = await controller.GetCurrentSsidAsync(cts.Token);
+        if (!string.IsNullOrEmpty(originalSsid))
+        {
+            Console.WriteLine($"Currently connected to \"{originalSsid}\".");
+        }
+
+        string plugAp;
+        if (!string.IsNullOrWhiteSpace(options.PlugId))
+        {
+            plugAp = options.PlugId!;
+            if (!PlugApPattern.IsMatch(plugAp))
+            {
+                throw new ArgumentException($"--plug-ap must match ECO-XXXXXXXX, got {plugAp}.");
+            }
+        }
+        else
+        {
+            Console.WriteLine("Scanning for ECO plug APs...");
+            var networks = await controller.ScanAsync(cts.Token);
+            var candidates = networks.Where(n => PlugApPattern.IsMatch(n.Ssid)).ToList();
+            if (candidates.Count == 0)
+            {
+                Console.Error.WriteLine("No ECO plug APs found. Factory-reset the plug and retry, or specify --plug-ap.");
+                return 3;
+            }
+
+            if (candidates.Count > 1)
+            {
+                Console.Error.WriteLine($"Multiple ECO plug APs found ({string.Join(", ", candidates.Select(c => c.Ssid))}). Specify --plug-ap.");
+                return 3;
+            }
+
+            plugAp = candidates[0].Ssid;
+        }
+
+        Console.WriteLine($"Connecting to plug AP \"{plugAp}\"...");
+        await controller.ConnectAsync(plugAp, null, cts.Token);
+
+        Console.WriteLine("Waiting for 192.168.4.x address...");
+        await controller.WaitForIPv4Async("192.168.4.", TimeSpan.FromSeconds(30), cts.Token);
+
+        Console.WriteLine("Sending provisioning packet...");
+        var sequenceBytes = GenerateSequenceBytes();
+        var field116 = GenerateRandomBytes(4);
+        var field124 = GenerateRandomBytes(4);
+        var packet = EcoPlugPacketBuilder.BuildProvisionPacket(
+            plugAp,
+            options.PlugName!,
+            options.Ssid!,
+            options.Password!,
+            options.ZipCode!,
+            sequenceBytes,
+            field116,
+            field124);
+
+        await EcoPlugClient.SendAsync(System.Net.IPAddress.Parse("192.168.4.1"), 80, packet);
+        Console.WriteLine($"Sent {packet.Length}-byte provision packet to 192.168.4.1:80.");
+
+        if (options.PrintDecode)
+        {
+            Console.WriteLine();
+            Console.WriteLine(EcoPlugPacketDecoder.Describe(packet));
+        }
+
+        if (!string.IsNullOrEmpty(originalSsid))
+        {
+            Console.WriteLine($"Reconnecting host to \"{originalSsid}\"...");
+            try
+            {
+                await controller.ConnectAsync(originalSsid, null, cts.Token);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Automatic reconnect failed: {ex.Message}. You may need to reconnect manually.");
+            }
+        }
+        else
+        {
+            Console.WriteLine("No prior SSID recorded; leaving WiFi state as-is.");
+        }
+
+        Console.WriteLine("Waiting briefly for plug to join home network, then running discover...");
+        await Task.Delay(TimeSpan.FromSeconds(15), cts.Token);
+
+        var discoverOptions = new EcoPlugOptions(
+            EcoPlugMode.Discover, null, null, 80, null, null, null, null,
+            false, false, false, null, false, null, null, 10000);
+        return await ExecuteDiscoverAsync(discoverOptions);
+    }
+
+    private static async Task<int> ExecuteProvisionAsync(EcoPlugOptions options)
+    {
+        var sequenceBytes = GenerateSequenceBytes();
+        var field116 = GenerateRandomBytes(4);
+        var field124 = GenerateRandomBytes(4);
+
+        var packet = EcoPlugPacketBuilder.BuildProvisionPacket(
+            options.PlugId!,
+            options.PlugName!,
+            options.Ssid!,
+            options.Password!,
+            options.ZipCode!,
+            sequenceBytes,
+            field116,
+            field124);
+
+        Console.WriteLine($"Built {packet.Length}-byte provision packet for {options.PlugId} (ssid=\"{options.Ssid}\", zip={options.ZipCode}).");
+
+        if (options.PrintPacket || options.DryRun)
+        {
+            Console.WriteLine(PacketHex.Format(packet));
+        }
+
+        if (options.PrintDecode)
+        {
+            Console.WriteLine();
+            Console.WriteLine(EcoPlugPacketDecoder.Describe(packet));
+        }
+
+        if (options.DryRun)
+        {
+            Console.WriteLine("Dry run only. Packet was not sent.");
+            return 0;
+        }
+
+        await EcoPlugClient.SendAsync(options.IpAddress!, options.Port, packet);
+        Console.WriteLine($"Sent UDP packet to {options.IpAddress}:{options.Port}.");
+        return 0;
     }
 
     private static async Task<int> ExecuteDiscoverAsync(EcoPlugOptions options)
@@ -559,9 +755,13 @@ internal sealed record EcoPlugOptions(
     bool ShowHelp,
     string? PcapPath = null,
     IPAddress? PcapPlugIp = null,
-    int DiscoverDurationMs = 5000)
+    int DiscoverDurationMs = 5000,
+    string? Ssid = null,
+    string? Password = null,
+    string? ZipCode = null)
 {
     private const string DefaultIp = "192.168.68.126";
+    private const string DefaultProvisionIp = "192.168.4.1";
     private const int DefaultPort = 80;
     private const string DefaultPlugId = "ECO-7806EDD6";
     private const string DefaultPlugName = "Heater";
@@ -587,7 +787,257 @@ internal sealed record EcoPlugOptions(
                 ? ParseRenameMode(args[1..])
             : args[0].Equals("discover", StringComparison.OrdinalIgnoreCase)
                 ? ParseDiscoverMode(args[1..])
+            : args[0].Equals("provision", StringComparison.OrdinalIgnoreCase)
+                ? ParseProvisionMode(args[1..])
+            : args[0].Equals("find-plugs", StringComparison.OrdinalIgnoreCase)
+                ? ParseFindPlugsMode(args[1..])
+            : args[0].Equals("configure", StringComparison.OrdinalIgnoreCase)
+                ? ParseConfigureMode(args[1..])
             : ParseBuildMode(args);
+    }
+
+    private static EcoPlugOptions ParseFindPlugsMode(string[] args)
+    {
+        var showAll = false;
+        foreach (var arg in args)
+        {
+            if (arg is "-h" or "--help")
+            {
+                return new EcoPlugOptions(EcoPlugMode.FindPlugs, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+            }
+
+            if (arg == "--all")
+            {
+                showAll = true;
+                continue;
+            }
+
+            throw new ArgumentException($"Unknown option: {arg}");
+        }
+
+        return new EcoPlugOptions(EcoPlugMode.FindPlugs, null, null, DefaultPort, null, null, null, null, false, showAll, false, null, false);
+    }
+
+    private static EcoPlugOptions ParseConfigureMode(string[] args)
+    {
+        string? ssid = null;
+        string? password = null;
+        string? zipCode = null;
+        string? plugAp = null;
+        var plugName = DefaultPlugName;
+        var printDecode = false;
+        var showHelp = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            if (arg is "-h" or "--help")
+            {
+                showHelp = true;
+                continue;
+            }
+
+            if (arg == "--decode")
+            {
+                printDecode = true;
+                continue;
+            }
+
+            if (!arg.StartsWith("-", StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"Unexpected argument in configure mode: {arg}");
+            }
+
+            var value = ReadOptionValue(args, ref i, arg);
+            switch (arg)
+            {
+                case "--ssid":
+                    ssid = value;
+                    break;
+                case "--password":
+                    password = value;
+                    break;
+                case "--zip":
+                    zipCode = value;
+                    break;
+                case "--plug-ap":
+                    plugAp = value;
+                    break;
+                case "--name":
+                    plugName = value;
+                    break;
+                default:
+                    throw new ArgumentException($"Unknown option: {arg}");
+            }
+        }
+
+        if (showHelp)
+        {
+            return new EcoPlugOptions(EcoPlugMode.Configure, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+        }
+
+        if (string.IsNullOrWhiteSpace(ssid))
+        {
+            throw new ArgumentException("Configure requires --ssid.");
+        }
+
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            throw new ArgumentException("Configure requires --password.");
+        }
+
+        if (string.IsNullOrWhiteSpace(zipCode))
+        {
+            throw new ArgumentException("Configure requires --zip.");
+        }
+
+        return new EcoPlugOptions(
+            EcoPlugMode.Configure,
+            null,
+            null,
+            DefaultPort,
+            plugAp,
+            plugName,
+            null,
+            null,
+            false,
+            false,
+            printDecode,
+            null,
+            false,
+            null,
+            null,
+            DefaultDiscoverDurationMs,
+            ssid,
+            password,
+            zipCode);
+    }
+
+    private static EcoPlugOptions ParseProvisionMode(string[] args)
+    {
+        var ipText = DefaultProvisionIp;
+        var port = DefaultPort;
+        var plugId = DefaultPlugId;
+        var plugName = DefaultPlugName;
+        string? ssid = null;
+        string? password = null;
+        string? zipCode = null;
+        var dryRun = false;
+        var printPacket = false;
+        var printDecode = false;
+        var showHelp = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            if (arg is "-h" or "--help")
+            {
+                showHelp = true;
+                continue;
+            }
+
+            if (arg == "--dry-run")
+            {
+                dryRun = true;
+                continue;
+            }
+
+            if (arg == "--print-packet")
+            {
+                printPacket = true;
+                continue;
+            }
+
+            if (arg == "--decode")
+            {
+                printDecode = true;
+                continue;
+            }
+
+            if (!arg.StartsWith("-", StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"Unexpected argument in provision mode: {arg}");
+            }
+
+            var value = ReadOptionValue(args, ref i, arg);
+            switch (arg)
+            {
+                case "--ip":
+                    ipText = value;
+                    break;
+                case "--port":
+                    if (!int.TryParse(value, out port) || port is < 1 or > 65535)
+                    {
+                        throw new ArgumentException("Port must be a number between 1 and 65535.");
+                    }
+                    break;
+                case "--plug-id":
+                    plugId = value;
+                    break;
+                case "--name":
+                    plugName = value;
+                    break;
+                case "--ssid":
+                    ssid = value;
+                    break;
+                case "--password":
+                    password = value;
+                    break;
+                case "--zip":
+                    zipCode = value;
+                    break;
+                default:
+                    throw new ArgumentException($"Unknown option: {arg}");
+            }
+        }
+
+        if (showHelp)
+        {
+            return new EcoPlugOptions(EcoPlugMode.Provision, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+        }
+
+        if (string.IsNullOrWhiteSpace(ssid))
+        {
+            throw new ArgumentException("Provision requires --ssid.");
+        }
+
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            throw new ArgumentException("Provision requires --password.");
+        }
+
+        if (string.IsNullOrWhiteSpace(zipCode))
+        {
+            throw new ArgumentException("Provision requires --zip.");
+        }
+
+        if (!IPAddress.TryParse(ipText, out var ipAddress))
+        {
+            throw new ArgumentException($"Invalid IP address: {ipText}");
+        }
+
+        return new EcoPlugOptions(
+            EcoPlugMode.Provision,
+            null,
+            ipAddress,
+            port,
+            plugId,
+            plugName,
+            null,
+            null,
+            dryRun,
+            printPacket,
+            printDecode,
+            null,
+            false,
+            null,
+            null,
+            DefaultDiscoverDurationMs,
+            ssid,
+            password,
+            zipCode);
     }
 
     private static EcoPlugOptions ParseBuildMode(string[] args)
