@@ -16,30 +16,40 @@ jobs:
         include:
           - os: windows-latest
             rid: win-x64
-            artifact: EcoPlugSender-win-x64.exe
-            binary: EcoPlugSender.exe
+            artifact: eps-win-x64.exe
+            binary: eps.exe
           - os: ubuntu-latest
             rid: linux-x64
-            artifact: EcoPlugSender-linux-x64
-            binary: EcoPlugSender
+            artifact: eps-linux-x64
+            binary: eps
           - os: macos-latest
             rid: osx-arm64
-            artifact: EcoPlugSender-osx-arm64
-            binary: EcoPlugSender
+            artifact: eps-osx-arm64
+            binary: eps
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Install Linux AOT prerequisites
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
+      - name: Derive version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish AOT single-file native binary
-        run: dotnet publish EcoPlugSender/EcoPlugSender.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true --self-contained true -o publish
+        run: dotnet publish EcoPlugSender/EcoPlugSender.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true -p:Version=${{ steps.version.outputs.value }} --self-contained true -o publish
 
       - name: Rename artifact
         shell: bash

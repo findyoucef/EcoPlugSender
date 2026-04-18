@@ -1,8 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AssemblyName>eps</AssemblyName>
+    <RootNamespace>EcoPlugSender</RootNamespace>
+    <Version>0.0.0-dev</Version>
+    <Product>EcoPlugSender</Product>
+    <Description>CLI for sending reverse-engineered UDP control packets to ECO smart plugs.</Description>
+    <Authors>Youcef Baouchi</Authors>
+    <Company>Youcef Baouchi</Company>
+    <Copyright>Copyright (c) Youcef Baouchi</Copyright>
+    <PackageProjectUrl>https://github.com/findyoucef/EcoPlugSender</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/findyoucef/EcoPlugSender</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 </Project>
