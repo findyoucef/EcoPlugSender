@@ -25,15 +25,10 @@ internal static class EcoPlugPacketBuilder
         0x03, 0x00, 0x00, 0x00,
     };
     private static readonly byte[] ProvisionFlagsBlock = { 0x00, 0x03, 0x00, 0x00, 0x01, 0x00 };
-    private const string ProvisionCloudIp1 = "203.66.65.34";
-    private const string ProvisionCloudIp2 = "203.66.65.34";
-    private const string ProvisionCloudIp3 = "61.220.255.143";
     private const string ProvisionCountryCode = "001";
-    private const string ProvisionHardwareToken = "SLqfKrdnFM";
 
     private static readonly byte[] CloudWrapperMarker = { 0x9A, 0x0C, 0x00, 0x00 };
     private static readonly byte[] CloudWrapperType = { 0xD9, 0x09, 0x00, 0x00 };
-    private static readonly byte[] CloudWrapperHardwareToken = Encoding.ASCII.GetBytes(ProvisionHardwareToken);
     public const int CloudWrapperLength = 1092;
     public const int CloudWrapperInnerOffset = 0x44;
     private const int CloudWrapperInnerLengthOffset = 0x40;
@@ -105,7 +100,9 @@ internal static class EcoPlugPacketBuilder
             trailingBytes: tail).ToArray();
     }
 
-    public static byte[] BuildCloudWrapperPacket(byte[] innerPacket, byte[] sessionKey, string? hardwareTokenOverride = null)
+    private const int CloudWrapperHardwareTokenLength = 10;
+
+    public static byte[] BuildCloudWrapperPacket(byte[] innerPacket, byte[] sessionKey, string hardwareToken)
     {
         if (innerPacket is null || innerPacket.Length == 0)
         {
@@ -122,13 +119,16 @@ internal static class EcoPlugPacketBuilder
             throw new ArgumentException("Inner packet too large to fit in cloud wrapper.", nameof(innerPacket));
         }
 
-        var token = hardwareTokenOverride is null
-            ? CloudWrapperHardwareToken
-            : Encoding.ASCII.GetBytes(hardwareTokenOverride);
-
-        if (token.Length != CloudWrapperHardwareToken.Length)
+        if (string.IsNullOrEmpty(hardwareToken))
         {
-            throw new ArgumentException($"Hardware token must be {CloudWrapperHardwareToken.Length} ASCII chars.", nameof(hardwareTokenOverride));
+            throw new ArgumentException("Hardware token required.", nameof(hardwareToken));
+        }
+
+        var token = Encoding.ASCII.GetBytes(hardwareToken);
+
+        if (token.Length != CloudWrapperHardwareTokenLength)
+        {
+            throw new ArgumentException($"Hardware token must be {CloudWrapperHardwareTokenLength} ASCII chars.", nameof(hardwareToken));
         }
 
         var buffer = new byte[CloudWrapperLength];
@@ -238,12 +238,13 @@ internal static class EcoPlugPacketBuilder
         ext.AddRange(new byte[34]);
         WritePaddedAscii(ext, ProvisionCountryCode, 10);
         WritePaddedAscii(ext, zipCode, 12);
-        WritePaddedAscii(ext, ProvisionCloudIp1, 16);
-        WritePaddedAscii(ext, ProvisionCloudIp2, 16);
-        WritePaddedAscii(ext, ProvisionCloudIp3, 16);
+        // Cloud-IP slots (3 × 16B) and hardware-token slot (10B) are ignored by the
+        // plug — verified 2026-04-17 by provisioning with zeros and watching the
+        // plug still join home WiFi with its firmware-baked values intact.
+        ext.AddRange(new byte[48]);
         ext.AddRange(ProvisionPriorityBlock);
         ext.AddRange(ProvisionFlagsBlock);
-        WritePaddedAscii(ext, ProvisionHardwareToken, 10);
+        ext.AddRange(new byte[10]);
         ext.AddRange(new byte[20]);
         return ext.ToArray();
     }

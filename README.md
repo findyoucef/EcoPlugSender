@@ -20,7 +20,7 @@ The packet layout intentionally preserves the original reverse-engineered behavi
 dotnet run --project EcoPlugSender -- on --dry-run --print-packet
 dotnet run --project EcoPlugSender -- on --dry-run --decode
 dotnet run --project EcoPlugSender -- off
-dotnet run --project EcoPlugSender -- on --plug-id ECO-7806EDD6 --name Heater
+dotnet run --project EcoPlugSender -- on --plug-id ECO-XXXXXXXX --name MyPlug
 dotnet run --project EcoPlugSender -- rename --current-name "office temp11" --new-name "office temp12"
 dotnet run --project EcoPlugSender -- rename --current-name "office temp11" --new-name "office temp12" --dry-run --decode
 dotnet run --project EcoPlugSender -- decode --hex "16 00 05 00 00 00 27 56 02 00 31 2E 36 2E 33 00"
@@ -37,10 +37,12 @@ dotnet run --project EcoPlugSender -- cloud-unenroll
 
 Shared defaults:
 
-- IP: `192.168.68.126`
-- Port: `80`
-- Plug ID: `ECO-7806EDD6`
-- Power-packet name: `Heater`
+- LAN port: `80`
+- Cloud rendezvous port: `11621`
+- Provision target: `192.168.4.1:80` (the plug's AP-mode address)
+- Discover timeout: `5000ms`
+
+Plug ID, LAN IP, cloud server, plug name, and hardware token are **not** defaulted — they're auto-resolved from a LAN discover broadcast at the start of each command (or from the WiFi SSID for `provision` / `configure`). Pass any of them explicitly to override, or `--no-resolve` to skip discovery entirely (required when operating off-LAN).
 
 `rename` does not default `--current-name`. You have to provide the device's current stored name explicitly.
 
@@ -62,7 +64,7 @@ The `office temp4 -> office temp5` capture also showed repeated 128-byte broadca
 
 `discover` broadcasts the 128-byte "connecting" probe to `255.255.255.255:25` and collects replies for `--timeout-ms` (default 3000). With `--decode`, each reply is parsed for plug id, stored name, and reported IP/port, which is how the phone app enumerates plugs on the LAN.
 
-`provision` builds and sends the 492-byte first-time-setup packet used when a plug is in AP mode. Required fields: `--ssid`, `--password`, `--zip`. The packet embeds the SSID/passphrase the plug should join plus the cloud endpoints, country code `001`, and the hardware token the stock app uses. Default target is `192.168.4.1:80` (the plug's AP-mode address). Use `--dry-run --decode` to inspect the packet without sending.
+`provision` builds and sends the 492-byte first-time-setup packet used when a plug is in AP mode. Required fields: `--ssid`, `--password`, `--zip`. Plug ID defaults to the connected AP's SSID (or the single `ECO-XXXXXXXX` SSID found by a scan); plug name defaults to the plug ID. The packet embeds the home-WiFi SSID/passphrase the plug should join, country code `001`, and fixed marker blocks. The cloud-endpoint and hardware-token slots are zeroed — the plug ignores them and uses its firmware-baked values for both. Default target is `192.168.4.1:80` (the plug's AP-mode address). Use `--dry-run --decode` to inspect the packet without sending.
 
 `find-plugs` scans nearby WiFi for SSIDs matching `ECO-XXXXXXXX` (the factory AP name of an unconfigured plug). Pass `--all` to print every scanned SSID instead of filtering.
 
@@ -87,7 +89,17 @@ Remove it with `sudo rm /etc/polkit-1/rules.d/50-ecoplug.rules` when you're done
 
 ## Cloud Control
 
-`cloud-on`, `cloud-off`, `cloud-enroll`, and `cloud-unenroll` drive the plug through the ECO rendezvous server at `203.66.65.34:11621` instead of talking directly to the plug on the LAN. Default server/port are baked in; override with `--server <ip>` / `--server-port <port>` if needed.
+`cloud-on`, `cloud-off`, `cloud-enroll`, and `cloud-unenroll` drive the plug through its ECO rendezvous server (UDP :11621) instead of talking directly to the plug on the LAN. Each plug has its **own** rendezvous server IP and 10-char hardware token, both burned into firmware and surfaced in the LAN discover broadcast.
+
+On-LAN, the CLI runs a discover broadcast at the start of the command and auto-populates `--server` / `--token` / `--plug-id` / `--name` from the reply. Off-LAN, pass them explicitly along with `--no-resolve`:
+
+```bash
+dotnet run --project EcoPlugSender -- cloud-on \
+    --no-resolve --plug-id ECO-XXXXXXXX --name MyPlug \
+    --server <plug-cloud-ip> --token <10-char-token>
+```
+
+Harvest the server IP and token from a prior on-LAN `discover --decode` run.
 
 - `cloud-on` / `cloud-off` wrap a cmd=0x16 power packet in the 1092-byte rendezvous frame and send to the server, which relays it to the plug.
 - `cloud-enroll` wraps a cmd=0x05 info lookup. On a plug whose cloud session has lapsed (fresh from factory, long idle, or after `cloud-unenroll`), run this once to re-establish session state before `cloud-on`/`cloud-off` will toggle again.
