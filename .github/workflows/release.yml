@@ -16,16 +16,16 @@ jobs:
         include:
           - os: windows-latest
             rid: win-x64
-            artifact: eps-win-x64.exe
             binary: eps.exe
+            archive: eps-win-x64.zip
           - os: ubuntu-latest
             rid: linux-x64
-            artifact: eps-linux-x64
             binary: eps
+            archive: eps-linux-x64.tar.gz
           - os: macos-latest
             rid: osx-arm64
-            artifact: eps-osx-arm64
             binary: eps
+            archive: eps-osx-arm64.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -51,15 +51,21 @@ jobs:
       - name: Publish AOT single-file native binary
         run: dotnet publish EcoPlugSender/EcoPlugSender.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true -p:Version=${{ steps.version.outputs.value }} --self-contained true -o publish
 
-      - name: Rename artifact
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: Compress-Archive -Path publish/${{ matrix.binary }} -DestinationPath ${{ matrix.archive }}
+
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
         shell: bash
-        run: mv publish/${{ matrix.binary }} ${{ matrix.artifact }}
+        run: tar -czf ${{ matrix.archive }} -C publish ${{ matrix.binary }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
 
   release:
     needs: build
