@@ -105,7 +105,7 @@ internal static class EcoPlugPacketBuilder
             trailingBytes: tail).ToArray();
     }
 
-    public static byte[] BuildCloudWrapperPacket(byte[] innerPacket, byte[] sessionKey)
+    public static byte[] BuildCloudWrapperPacket(byte[] innerPacket, byte[] sessionKey, string? hardwareTokenOverride = null)
     {
         if (innerPacket is null || innerPacket.Length == 0)
         {
@@ -122,11 +122,20 @@ internal static class EcoPlugPacketBuilder
             throw new ArgumentException("Inner packet too large to fit in cloud wrapper.", nameof(innerPacket));
         }
 
+        var token = hardwareTokenOverride is null
+            ? CloudWrapperHardwareToken
+            : Encoding.ASCII.GetBytes(hardwareTokenOverride);
+
+        if (token.Length != CloudWrapperHardwareToken.Length)
+        {
+            throw new ArgumentException($"Hardware token must be {CloudWrapperHardwareToken.Length} ASCII chars.", nameof(hardwareTokenOverride));
+        }
+
         var buffer = new byte[CloudWrapperLength];
         Buffer.BlockCopy(CloudWrapperMarker, 0, buffer, 0x00, 4);
         Buffer.BlockCopy(CloudWrapperType, 0, buffer, 0x04, 4);
         Buffer.BlockCopy(sessionKey, 0, buffer, 0x08, 4);
-        Buffer.BlockCopy(CloudWrapperHardwareToken, 0, buffer, 0x0C, CloudWrapperHardwareToken.Length);
+        Buffer.BlockCopy(token, 0, buffer, 0x0C, token.Length);
         BitConverter.GetBytes((uint)innerPacket.Length).CopyTo(buffer, CloudWrapperInnerLengthOffset);
         Buffer.BlockCopy(innerPacket, 0, buffer, CloudWrapperInnerOffset, innerPacket.Length);
         return buffer;

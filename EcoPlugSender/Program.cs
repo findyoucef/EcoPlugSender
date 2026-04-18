@@ -187,15 +187,15 @@ internal static class App
     private static void PrintUsage()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  EcoPlugSender <on|off> [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender <on|off> [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender rename --current-name <name> --new-name <name> [--ip <address>] [--port <port>] [--plug-id <id>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender discover [--timeout-ms <ms>] [--decode]");
         Console.WriteLine("  EcoPlugSender provision --ssid <ssid> --password <pass> --zip <zip> [--name <name>] [--plug-id <id>] [--ip <address>] [--port <port>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender find-plugs");
         Console.WriteLine("  EcoPlugSender configure --ssid <home-ssid> --password <home-pass> --zip <zip> [--plug-ap <ECO-XXXXXXXX>] [--name <name>]");
-        Console.WriteLine("  EcoPlugSender <cloud-on|cloud-off> [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender cloud-enroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender cloud-unenroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender <cloud-on|cloud-off> [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender cloud-enroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender cloud-unenroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender decode --hex \"16 00 05 00 ...\"");
         Console.WriteLine("  EcoPlugSender pcap-timeline --pcap <file> [--plug-ip <address>]");
         Console.WriteLine();
@@ -485,7 +485,7 @@ internal static class App
         }
         // Outer session key must equal inner field124 (observed in every phone-side capture).
         var sessionKey = (byte[])field124.Clone();
-        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey);
+        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey, options.CloudHardwareToken);
         var stateLabel = state.ToString().ToLowerInvariant();
 
         Console.WriteLine($"Built {wrapped.Length}-byte cloud wrapper for {options.PlugId} ({stateLabel}). Inner: {innerPacket.Length}-byte cmd=0x16.");
@@ -518,7 +518,7 @@ internal static class App
         var field124 = GenerateRandomBytes(4);
         var innerPacket = EcoPlugPacketBuilder.BuildReadPacket(options.PlugId!, options.PlugName!, sequenceBytes, field116, field124);
         var sessionKey = (byte[])field124.Clone();
-        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey);
+        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey, options.CloudHardwareToken);
 
         Console.WriteLine($"Built {wrapped.Length}-byte cloud wrapper for {options.PlugId} (unenroll). Inner: {innerPacket.Length}-byte cmd=0x17 read with fresh session key.");
 
@@ -550,7 +550,7 @@ internal static class App
         var field124 = GenerateRandomBytes(4);
         var innerPacket = EcoPlugPacketBuilder.BuildInfoPacket(options.PlugId!, options.PlugName!, sequenceBytes, field116, field124);
         var sessionKey = (byte[])field124.Clone();
-        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey);
+        var wrapped = EcoPlugPacketBuilder.BuildCloudWrapperPacket(innerPacket, sessionKey, options.CloudHardwareToken);
 
         Console.WriteLine($"Built {wrapped.Length}-byte cloud wrapper for {options.PlugId} (enroll via cmd=0x05 lookup). Inner: {innerPacket.Length}-byte cmd=0x05.");
 
@@ -965,7 +965,8 @@ internal sealed record EcoPlugOptions(
     int DiscoverDurationMs = 5000,
     string? Ssid = null,
     string? Password = null,
-    string? ZipCode = null)
+    string? ZipCode = null,
+    string? CloudHardwareToken = null)
 {
     private const string DefaultIp = "192.168.68.126";
     private const string DefaultProvisionIp = "192.168.4.1";
@@ -1156,6 +1157,7 @@ internal sealed record EcoPlugOptions(
         var printPacket = false;
         var printDecode = false;
         var showHelp = false;
+        string? tokenOverride = null;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -1208,6 +1210,9 @@ internal sealed record EcoPlugOptions(
                 case "--name":
                     plugName = value;
                     break;
+                case "--token":
+                    tokenOverride = value;
+                    break;
                 default:
                     throw new ArgumentException($"Unknown option: {arg}");
             }
@@ -1223,7 +1228,7 @@ internal sealed record EcoPlugOptions(
             throw new ArgumentException($"Invalid server IP address: {serverIp}");
         }
 
-        return new EcoPlugOptions(mode, state, serverAddress, serverPort, plugId, plugName, null, null, dryRun, printPacket, printDecode, null, false);
+        return new EcoPlugOptions(mode, state, serverAddress, serverPort, plugId, plugName, null, null, dryRun, printPacket, printDecode, null, false, CloudHardwareToken: tokenOverride);
     }
 
     private static string ModeCommandName(EcoPlugMode mode) => mode switch
