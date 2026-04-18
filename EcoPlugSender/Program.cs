@@ -19,6 +19,7 @@ internal enum EcoPlugMode
     CloudOff,
     CloudEnroll,
     CloudUnenroll,
+    Status,
 }
 
 internal static class App
@@ -86,6 +87,15 @@ internal static class App
                 options = await AutoResolveAsync(options, forCloud: true);
                 RequireCloudFields(options);
                 return await ExecuteCloudUnenrollAsync(options);
+            }
+
+            if (options.Mode == EcoPlugMode.Status)
+            {
+                options = await AutoResolveAsync(options, forCloud: false);
+                RequireResolvedField(options.PlugId, "plug ID");
+                RequireResolvedField(options.PlugName, "plug name");
+                RequireResolvedField(options.IpAddress, "plug LAN IP");
+                return await ExecuteStatusAsync(options);
             }
 
             if (options.Mode == EcoPlugMode.Rename)
@@ -202,6 +212,7 @@ internal static class App
     {
         Console.WriteLine("Usage:");
         Console.WriteLine("  EcoPlugSender <on|off> [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  EcoPlugSender status [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender rename --current-name <name> --new-name <name> [--ip <address>] [--port <port>] [--plug-id <id>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender discover [--timeout-ms <ms>] [--decode]");
         Console.WriteLine("  EcoPlugSender provision --ssid <ssid> --password <pass> --zip <zip> [--name <name>] [--plug-id <id>] [--ip <address>] [--port <port>] [--dry-run] [--print-packet] [--decode]");
@@ -495,6 +506,47 @@ internal static class App
         await EcoPlugClient.SendAsync(options.IpAddress!, options.Port, packet);
         Console.WriteLine($"Sent UDP packet to {options.IpAddress}:{options.Port}.");
         return 0;
+    }
+
+    private static async Task<int> ExecuteStatusAsync(EcoPlugOptions options)
+    {
+        var sequenceBytes = GenerateSequenceBytes();
+        var field116 = GenerateRandomBytes(4);
+        var field124 = GenerateRandomBytes(4);
+        var packet = EcoPlugPacketBuilder.BuildInfoPacket(options.PlugId!, options.PlugName!, sequenceBytes, field116, field124);
+
+        Console.WriteLine($"Built {packet.Length}-byte cmd=0x05 info packet for {options.PlugId}.");
+
+        if (options.PrintPacket || options.DryRun)
+        {
+            Console.WriteLine(PacketHex.Format(packet));
+        }
+
+        if (options.DryRun)
+        {
+            Console.WriteLine("Dry run only. Packet was not sent.");
+            return 0;
+        }
+
+        var endpoint = new IPEndPoint(options.IpAddress!, options.Port);
+        using var client = EcoPlugClient.OpenClient();
+        var responses = await EcoPlugClient.SendAndReceiveAsync(client, endpoint, packet, duplicateCount: 1, duplicateGapMs: 0, responseIdleTimeoutMs: 1500);
+        Console.WriteLine($"Sent to {endpoint}. Received {responses.Count} response{(responses.Count == 1 ? "" : "s")}.");
+
+        for (var i = 0; i < responses.Count; i++)
+        {
+            var r = responses[i];
+            Console.WriteLine();
+            Console.WriteLine($"[response {i + 1} from {r.RemoteEndPoint}] length={r.Payload.Length}");
+            Console.WriteLine(PacketHex.Format(r.Payload));
+            if (options.PrintDecode)
+            {
+                Console.WriteLine();
+                Console.WriteLine(EcoPlugPacketDecoder.Describe(r.Payload));
+            }
+        }
+
+        return responses.Count > 0 ? 0 : 3;
     }
 
     private static async Task<string> ResolvePlugIdFromWifiAsync()
@@ -1239,6 +1291,8 @@ internal sealed record EcoPlugOptions(
                 ? ParseCloudEnrollMode(args[1..])
             : args[0].Equals("cloud-unenroll", StringComparison.OrdinalIgnoreCase)
                 ? ParseCloudUnenrollMode(args[1..])
+            : args[0].Equals("status", StringComparison.OrdinalIgnoreCase)
+                ? ParseStatusMode(args[1..])
             : ParseBuildMode(args);
     }
 
@@ -1604,6 +1658,58 @@ internal sealed record EcoPlugOptions(
             ssid,
             password,
             zipCode);
+    }
+
+    private static EcoPlugOptions ParseStatusMode(string[] args)
+    {
+        string? ipText = null;
+        var port = DefaultPort;
+        string? plugId = null;
+        string? plugName = null;
+        var dryRun = false;
+        var printPacket = false;
+        var printDecode = false;
+        var showHelp = false;
+        var noResolve = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            if (arg is "-h" or "--help") { showHelp = true; continue; }
+            if (arg == "--dry-run") { dryRun = true; continue; }
+            if (arg == "--print-packet") { printPacket = true; continue; }
+            if (arg == "--decode") { printDecode = true; continue; }
+            if (arg == "--no-resolve") { noResolve = true; continue; }
+
+            var value = ReadOptionValue(args, ref i, arg);
+            switch (arg)
+            {
+                case "--ip": ipText = value; break;
+                case "--port":
+                    if (!int.TryParse(value, out port) || port is < 1 or > 65535)
+                        throw new ArgumentException("Port must be a number between 1 and 65535.");
+                    break;
+                case "--plug-id": plugId = value; break;
+                case "--name": plugName = value; break;
+                default: throw new ArgumentException($"Unknown option: {arg}");
+            }
+        }
+
+        if (showHelp)
+        {
+            return new EcoPlugOptions(EcoPlugMode.Status, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+        }
+
+        IPAddress? ipAddress = null;
+        if (ipText is not null)
+        {
+            if (!IPAddress.TryParse(ipText, out var parsed))
+                throw new ArgumentException($"Invalid IP address: {ipText}");
+            ipAddress = parsed;
+        }
+
+        return new EcoPlugOptions(EcoPlugMode.Status, null, ipAddress, port, plugId, plugName, null, null, dryRun, printPacket, printDecode, null, false, NoResolve: noResolve);
     }
 
     private static EcoPlugOptions ParseBuildMode(string[] args)

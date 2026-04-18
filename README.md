@@ -20,6 +20,7 @@ The packet layout intentionally preserves the original reverse-engineered behavi
 dotnet run --project EcoPlugSender -- on --dry-run --print-packet
 dotnet run --project EcoPlugSender -- on --dry-run --decode
 dotnet run --project EcoPlugSender -- off
+dotnet run --project EcoPlugSender -- status
 dotnet run --project EcoPlugSender -- on --plug-id ECO-XXXXXXXX --name MyPlug
 dotnet run --project EcoPlugSender -- rename --current-name "office temp11" --new-name "office temp12"
 dotnet run --project EcoPlugSender -- rename --current-name "office temp11" --new-name "office temp12" --dry-run --decode
@@ -65,6 +66,8 @@ The `office temp4 -> office temp5` capture also showed repeated 128-byte broadca
 `discover` broadcasts the 128-byte "connecting" probe to `255.255.255.255:25` and collects replies for `--timeout-ms` (default 3000). With `--decode`, each reply is parsed for plug id, stored name, and reported IP/port, which is how the phone app enumerates plugs on the LAN.
 
 `provision` builds and sends the 492-byte first-time-setup packet used when a plug is in AP mode. Required fields: `--ssid`, `--password`, `--zip`. Plug ID defaults to the connected AP's SSID (or the single `ECO-XXXXXXXX` SSID found by a scan); plug name defaults to the plug ID. The packet embeds the home-WiFi SSID/passphrase the plug should join, country code `001`, and fixed marker blocks. The cloud-endpoint and hardware-token slots are zeroed — the plug ignores them and uses its firmware-baked values for both. Default target is `192.168.4.1:80` (the plug's AP-mode address). Use `--dry-run --decode` to inspect the packet without sending.
+
+`status` sends a cmd=0x05 info request to a plug and prints the raw response hex. Useful for protocol archaeology — firmware version, stored identity, and any non-obvious fields the plug reports. Tested 2026-04-17 against an ECO-7806EDD6: zero bytes change with a 1500W load connected, so this model has no current sensor. Other ECO plug SKUs may differ.
 
 `find-plugs` scans nearby WiFi for SSIDs matching `ECO-XXXXXXXX` (the factory AP name of an unconfigured plug). Pass `--all` to print every scanned SSID instead of filtering.
 
