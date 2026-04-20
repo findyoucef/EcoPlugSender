@@ -236,19 +236,19 @@ internal static class App
     private static void PrintUsage()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  EcoPlugSender <on|off> [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender status [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender rename --current-name <name> --new-name <name> [--ip <address>] [--port <port>] [--plug-id <id>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender discover [--timeout-ms <ms>] [--decode]");
-        Console.WriteLine("  EcoPlugSender provision --ssid <ssid> --password <pass> --zip <zip> [--name <name>] [--plug-id <id>] [--ip <address>] [--port <port>] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender find-plugs");
-        Console.WriteLine("  EcoPlugSender configure --ssid <home-ssid> --password <home-pass> --zip <zip> [--plug-ap <ECO-XXXXXXXX>] [--name <name>]");
-        Console.WriteLine("  EcoPlugSender <cloud-on|cloud-off> [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender cloud-enroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender cloud-unenroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
-        Console.WriteLine("  EcoPlugSender decode --hex \"16 00 05 00 ...\"");
-        Console.WriteLine("  EcoPlugSender pcap-timeline --pcap <file> [--plug-ip <address>]");
-        Console.WriteLine("  EcoPlugSender update [--check]");
+        Console.WriteLine("  eco <on|off> [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  eco status [--ip <address>] [--port <port>] [--plug-id <id>] [--name <name>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  eco rename --current-name <name> --new-name <name> [--ip <address>] [--port <port>] [--plug-id <id>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  eco discover [--timeout-ms <ms>] [--decode]");
+        Console.WriteLine("  eco provision --ssid <ssid> --password <pass> --zip <zip> [--name <name>] [--plug-id <id>] [--ip <address>] [--port <port>] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  eco find-plugs");
+        Console.WriteLine("  eco configure --ssid <home-ssid> --password <home-pass> --zip <zip> [--plug-ap <ECO-XXXXXXXX>] [--name <name>]");
+        Console.WriteLine("  eco <cloud-on|cloud-off> [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  eco cloud-enroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  eco cloud-unenroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
+        Console.WriteLine("  eco decode --hex \"16 00 05 00 ...\"");
+        Console.WriteLine("  eco pcap-timeline --pcap <file> [--plug-ip <address>]");
+        Console.WriteLine("  eco update [--check]");
         Console.WriteLine();
         Console.WriteLine("Auto-discover: on/off/rename/cloud-* commands broadcast-discover the plug on LAN");
         Console.WriteLine("to populate missing --plug-id / --ip / --server / --token / --name (~3s). Explicit");
