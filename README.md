@@ -69,6 +69,8 @@ The `office temp4 -> office temp5` capture also showed repeated 128-byte broadca
 
 `status` sends a cmd=0x05 info request to a plug and prints the raw response hex. Useful for protocol archaeology — firmware version, stored identity, and any non-obvious fields the plug reports. Tested 2026-04-17 against an ECO-7806EDD6: zero bytes change with a 1500W load connected, so this model has no current sensor. Other ECO plug SKUs may differ.
 
+`probe-cmd --cmd 0xNN` sends a status-shaped packet with an arbitrary command byte as the leading byte (replacing `0x05`). Useful for enumerating which command codes the firmware responds to. Tested 2026-04-19: on indoor ECO-7806EDD6 / WiOn 50050 ECO-7806C23E, the firmware replies to 0x02, 0x05, 0x14, 0x15, 0x18, 0x20, 0x21, 0x22, 0x24; the outdoor ECO-7806988A additionally responds to 0x28 and 0x2C. Cmd=0x21 is the only one with a non-ACK-sized response — 172 bytes, including a 44-byte trailer that appears to be a reserved HLW8012 metering slot (stays all-zero on every unit tested, which all lacked the populated current-sense IC).
+
 `find-plugs` scans nearby WiFi for SSIDs matching `ECO-XXXXXXXX` (the factory AP name of an unconfigured plug). Pass `--all` to print every scanned SSID instead of filtering.
 
 `configure` orchestrates the full first-time setup: remember the current SSID → scan for an `ECO-*` plug AP (or use `--plug-ap` to target one by name) → join it as an open network → wait for a `192.168.4.x` lease → send the provision packet to `192.168.4.1:80` → reconnect the host to the original SSID → wait briefly → run `discover` so the freshly provisioned plug shows up on the home LAN. Required fields mirror `provision` (`--ssid`, `--password`, `--zip`).

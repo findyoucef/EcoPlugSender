@@ -175,6 +175,12 @@ internal static class EcoPlugPacketBuilder
     public static byte[] BuildInfoPacket(string plugId, string currentName, byte[] sequenceBytes, byte[] field116, byte[] field124)
         => BuildPacket(InfoCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, ReadCommandMarker, []).ToArray();
 
+    public static byte[] BuildGenericCommandPacket(byte cmdByte, string plugId, string currentName, byte[] sequenceBytes, byte[] field116, byte[] field124)
+    {
+        var header = new byte[] { cmdByte, 0x00, 0x05, 0x00 };
+        return BuildPacket(header, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, ReadCommandMarker, []).ToArray();
+    }
+
     public static byte[] BuildReadPacket(string plugId, string currentName, byte[] sequenceBytes, byte[] field116, byte[] field124)
         => BuildPacket(ReadCommandHeader, NormalizeFullPlugId(plugId), currentName, sequenceBytes, field116, field124, ReadCommandMarker, []).ToArray();
 

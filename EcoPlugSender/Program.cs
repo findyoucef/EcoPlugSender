@@ -20,6 +20,7 @@ internal enum EcoPlugMode
     CloudEnroll,
     CloudUnenroll,
     Status,
+    ProbeCmd,
 }
 
 internal static class App
@@ -87,6 +88,15 @@ internal static class App
                 options = await AutoResolveAsync(options, forCloud: true);
                 RequireCloudFields(options);
                 return await ExecuteCloudUnenrollAsync(options);
+            }
+
+            if (options.Mode == EcoPlugMode.ProbeCmd)
+            {
+                options = await AutoResolveAsync(options, forCloud: false);
+                RequireResolvedField(options.PlugId, "plug ID");
+                RequireResolvedField(options.PlugName, "plug name");
+                RequireResolvedField(options.IpAddress, "plug LAN IP");
+                return await ExecuteProbeCmdAsync(options);
             }
 
             if (options.Mode == EcoPlugMode.Status)
@@ -506,6 +516,43 @@ internal static class App
         await EcoPlugClient.SendAsync(options.IpAddress!, options.Port, packet);
         Console.WriteLine($"Sent UDP packet to {options.IpAddress}:{options.Port}.");
         return 0;
+    }
+
+    private static async Task<int> ExecuteProbeCmdAsync(EcoPlugOptions options)
+    {
+        var cmdByte = options.ProbeCmdByte!.Value;
+        var sequenceBytes = GenerateSequenceBytes();
+        var field116 = GenerateRandomBytes(4);
+        var field124 = GenerateRandomBytes(4);
+        var packet = EcoPlugPacketBuilder.BuildGenericCommandPacket(cmdByte, options.PlugId!, options.PlugName!, sequenceBytes, field116, field124);
+
+        Console.WriteLine($"Built {packet.Length}-byte cmd=0x{cmdByte:X2} packet for {options.PlugId}.");
+
+        if (options.PrintPacket || options.DryRun)
+        {
+            Console.WriteLine(PacketHex.Format(packet));
+        }
+
+        if (options.DryRun)
+        {
+            Console.WriteLine("Dry run only. Packet was not sent.");
+            return 0;
+        }
+
+        var endpoint = new IPEndPoint(options.IpAddress!, options.Port);
+        using var client = EcoPlugClient.OpenClient();
+        var responses = await EcoPlugClient.SendAndReceiveAsync(client, endpoint, packet, duplicateCount: 1, duplicateGapMs: 0, responseIdleTimeoutMs: 1500);
+        Console.WriteLine($"cmd=0x{cmdByte:X2} -> {responses.Count} response{(responses.Count == 1 ? "" : "s")} from {endpoint}.");
+
+        for (var i = 0; i < responses.Count; i++)
+        {
+            var r = responses[i];
+            Console.WriteLine();
+            Console.WriteLine($"[response {i + 1} from {r.RemoteEndPoint}] length={r.Payload.Length}");
+            Console.WriteLine(PacketHex.Format(r.Payload));
+        }
+
+        return responses.Count > 0 ? 0 : 3;
     }
 
     private static async Task<int> ExecuteStatusAsync(EcoPlugOptions options)
@@ -1250,7 +1297,8 @@ internal sealed record EcoPlugOptions(
     string? Password = null,
     string? ZipCode = null,
     string? CloudHardwareToken = null,
-    bool NoResolve = false)
+    bool NoResolve = false,
+    byte? ProbeCmdByte = null)
 {
     private const string DefaultProvisionIp = "192.168.4.1";
     private const int DefaultPort = 80;
@@ -1293,6 +1341,8 @@ internal sealed record EcoPlugOptions(
                 ? ParseCloudUnenrollMode(args[1..])
             : args[0].Equals("status", StringComparison.OrdinalIgnoreCase)
                 ? ParseStatusMode(args[1..])
+            : args[0].Equals("probe-cmd", StringComparison.OrdinalIgnoreCase)
+                ? ParseProbeCmdMode(args[1..])
             : ParseBuildMode(args);
     }
 
@@ -1658,6 +1708,68 @@ internal sealed record EcoPlugOptions(
             ssid,
             password,
             zipCode);
+    }
+
+    private static EcoPlugOptions ParseProbeCmdMode(string[] args)
+    {
+        string? ipText = null;
+        var port = DefaultPort;
+        string? plugId = null;
+        string? plugName = null;
+        var dryRun = false;
+        var printPacket = false;
+        var showHelp = false;
+        var noResolve = false;
+        byte? cmdByte = null;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            if (arg is "-h" or "--help") { showHelp = true; continue; }
+            if (arg == "--dry-run") { dryRun = true; continue; }
+            if (arg == "--print-packet") { printPacket = true; continue; }
+            if (arg == "--no-resolve") { noResolve = true; continue; }
+
+            var value = ReadOptionValue(args, ref i, arg);
+            switch (arg)
+            {
+                case "--ip": ipText = value; break;
+                case "--port":
+                    if (!int.TryParse(value, out port) || port is < 1 or > 65535)
+                        throw new ArgumentException("Port must be a number between 1 and 65535.");
+                    break;
+                case "--plug-id": plugId = value; break;
+                case "--name": plugName = value; break;
+                case "--cmd":
+                    var trimmed = value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? value[2..] : value;
+                    if (!byte.TryParse(trimmed, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var parsedByte))
+                        throw new ArgumentException($"--cmd must be a 1-byte hex value (e.g. 0x05), got {value}.");
+                    cmdByte = parsedByte;
+                    break;
+                default: throw new ArgumentException($"Unknown option: {arg}");
+            }
+        }
+
+        if (showHelp)
+        {
+            return new EcoPlugOptions(EcoPlugMode.ProbeCmd, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+        }
+
+        if (cmdByte is null)
+        {
+            throw new ArgumentException("probe-cmd requires --cmd 0xNN.");
+        }
+
+        IPAddress? ipAddress = null;
+        if (ipText is not null)
+        {
+            if (!IPAddress.TryParse(ipText, out var parsed))
+                throw new ArgumentException($"Invalid IP address: {ipText}");
+            ipAddress = parsed;
+        }
+
+        return new EcoPlugOptions(EcoPlugMode.ProbeCmd, null, ipAddress, port, plugId, plugName, null, null, dryRun, printPacket, false, null, false, NoResolve: noResolve, ProbeCmdByte: cmdByte);
     }
 
     private static EcoPlugOptions ParseStatusMode(string[] args)
