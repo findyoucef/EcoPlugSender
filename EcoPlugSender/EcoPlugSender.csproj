@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>eps</AssemblyName>
+    <AssemblyName>eco</AssemblyName>
     <RootNamespace>EcoPlugSender</RootNamespace>
     <Version>0.0.0-dev</Version>
     <Product>EcoPlugSender</Product>

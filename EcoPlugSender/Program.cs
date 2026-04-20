@@ -21,12 +21,15 @@ internal enum EcoPlugMode
     CloudUnenroll,
     Status,
     ProbeCmd,
+    Update,
 }
 
 internal static class App
 {
     public static async Task<int> RunAsync(string[] args)
     {
+        SelfUpdater.CleanupStaleBackup();
+        var skipBanner = false;
         try
         {
             var options = EcoPlugOptions.Parse(args);
@@ -35,6 +38,14 @@ internal static class App
                 PrintUsage();
                 return 0;
             }
+
+            if (options.Mode == EcoPlugMode.Update)
+            {
+                skipBanner = true;
+                return await SelfUpdater.RunAsync(options.UpdateCheckOnly);
+            }
+
+            UpdateChecker.FireBackgroundCheckIfDue();
 
             if (options.Mode == EcoPlugMode.DecodeHex)
             {
@@ -216,6 +227,10 @@ internal static class App
             Console.Error.WriteLine($"UDP send failed: {ex.Message}");
             return 2;
         }
+        finally
+        {
+            if (!skipBanner) UpdateChecker.PrintBannerIfAvailable();
+        }
     }
 
     private static void PrintUsage()
@@ -233,6 +248,7 @@ internal static class App
         Console.WriteLine("  EcoPlugSender cloud-unenroll [--server <ip>] [--server-port <port>] [--plug-id <id>] [--name <name>] [--token <10-char>] [--no-resolve] [--dry-run] [--print-packet] [--decode]");
         Console.WriteLine("  EcoPlugSender decode --hex \"16 00 05 00 ...\"");
         Console.WriteLine("  EcoPlugSender pcap-timeline --pcap <file> [--plug-ip <address>]");
+        Console.WriteLine("  EcoPlugSender update [--check]");
         Console.WriteLine();
         Console.WriteLine("Auto-discover: on/off/rename/cloud-* commands broadcast-discover the plug on LAN");
         Console.WriteLine("to populate missing --plug-id / --ip / --server / --token / --name (~3s). Explicit");
@@ -1298,7 +1314,8 @@ internal sealed record EcoPlugOptions(
     string? ZipCode = null,
     string? CloudHardwareToken = null,
     bool NoResolve = false,
-    byte? ProbeCmdByte = null)
+    byte? ProbeCmdByte = null,
+    bool UpdateCheckOnly = false)
 {
     private const string DefaultProvisionIp = "192.168.4.1";
     private const int DefaultPort = 80;
@@ -1343,6 +1360,8 @@ internal sealed record EcoPlugOptions(
                 ? ParseStatusMode(args[1..])
             : args[0].Equals("probe-cmd", StringComparison.OrdinalIgnoreCase)
                 ? ParseProbeCmdMode(args[1..])
+            : args[0].Equals("update", StringComparison.OrdinalIgnoreCase)
+                ? ParseUpdateMode(args[1..])
             : ParseBuildMode(args);
     }
 
@@ -1770,6 +1789,25 @@ internal sealed record EcoPlugOptions(
         }
 
         return new EcoPlugOptions(EcoPlugMode.ProbeCmd, null, ipAddress, port, plugId, plugName, null, null, dryRun, printPacket, false, null, false, NoResolve: noResolve, ProbeCmdByte: cmdByte);
+    }
+
+    private static EcoPlugOptions ParseUpdateMode(string[] args)
+    {
+        var checkOnly = false;
+        var showHelp = false;
+        foreach (var arg in args)
+        {
+            if (arg is "-h" or "--help") { showHelp = true; continue; }
+            if (arg == "--check") { checkOnly = true; continue; }
+            throw new ArgumentException($"Unknown option: {arg}");
+        }
+
+        if (showHelp)
+        {
+            return new EcoPlugOptions(EcoPlugMode.Update, null, null, DefaultPort, null, null, null, null, false, false, false, null, true);
+        }
+
+        return new EcoPlugOptions(EcoPlugMode.Update, null, null, DefaultPort, null, null, null, null, false, false, false, null, false, UpdateCheckOnly: checkOnly);
     }
 
     private static EcoPlugOptions ParseStatusMode(string[] args)

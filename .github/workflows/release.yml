@@ -16,16 +16,16 @@ jobs:
         include:
           - os: windows-latest
             rid: win-x64
-            binary: eps.exe
-            archive: eps-win-x64.zip
+            binary: eco.exe
+            archive: eco-win-x64.zip
           - os: ubuntu-latest
             rid: linux-x64
-            binary: eps
-            archive: eps-linux-x64.tar.gz
+            binary: eco
+            archive: eco-linux-x64.tar.gz
           - os: macos-latest
             rid: osx-arm64
-            binary: eps
-            archive: eps-osx-arm64.tar.gz
+            binary: eco
+            archive: eco-osx-arm64.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -80,6 +80,7 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
+          repository: findyoucef/eco-releases
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
           files: artifacts/*
-          generate_release_notes: true
           fail_on_unmatched_files: true

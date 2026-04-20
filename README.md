@@ -34,6 +34,8 @@ dotnet run --project EcoPlugSender -- cloud-on
 dotnet run --project EcoPlugSender -- cloud-off
 dotnet run --project EcoPlugSender -- cloud-enroll
 dotnet run --project EcoPlugSender -- cloud-unenroll
+eco update
+eco update --check
 ```
 
 Shared defaults:
@@ -111,3 +113,11 @@ Harvest the server IP and token from a prior on-LAN `discover --decode` run.
 - `cloud-unenroll` wraps a cmd=0x17 read with a fresh random session key, which mirrors what the Android app sends when you tap "unenroll". Subsequent `cloud-on`/`cloud-off` requests get no reply from the relay until you run `cloud-enroll`.
 
 All four accept the usual `--dry-run`, `--print-packet`, and `--decode` flags for packet inspection without sending.
+
+## Self-update
+
+`eco update` checks the [latest GitHub release](https://github.com/findyoucef/eco-releases/releases/latest) and, if the running binary is out of date, downloads the matching per-platform archive (`eco-win-x64.zip`, `eco-linux-x64.tar.gz`, or `eco-osx-arm64.tar.gz`), extracts it, and replaces the running executable in place. On Windows the current `eco.exe` is renamed to `eco.exe.old` before the new binary takes its place; the stale `.old` file is deleted automatically on the next `eco` run. On Linux/macOS the binary is overwritten directly.
+
+`eco update --check` reports whether a newer release is available without downloading it.
+
+Only works against the published `eco` binary — running `dotnet run -- update` from a source checkout is refused.
